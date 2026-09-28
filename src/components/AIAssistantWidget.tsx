@@ -1,0 +1,151 @@
+import { useEffect, useRef, useState } from 'react'
+import { Sparkles, Send, X, Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { supabase } from '@/integrations/supabase/client'
+import ReactMarkdown from 'react-markdown'
+import { toast } from 'sonner'
+
+type Msg = { role: 'user' | 'assistant'; content: string }
+
+const SUGGESTIONS = [
+  'Doanh thu hôm nay?',
+  'Nguyên liệu nào sắp hết?',
+]
+
+export default function AIAssistantWidget() {
+  const [open, setOpen] = useState(false)
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+ const [cooldown] = useState(0)
+  const defaultMsg: Msg = { role: 'assistant', content: 'Xin chào! Mình là trợ lý AI. Bạn có thể hỏi doanh thu, quản lý menu, kiểm tra bàn, tồn kho... Cứ ra lệnh nhé 👋' }
+const STORAGE_KEY = 'ai_chat_history'
+
+const [messages, setMessages] = useState<Msg[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY)
+      return saved ? JSON.parse(saved) : [defaultMsg]
+    } catch {
+      return [defaultMsg]
+    }
+  })
+  const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
+
+useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(messages))
+  }, [messages])
+
+useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        localStorage.removeItem(STORAGE_KEY)
+        setMessages([defaultMsg])
+      }
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const send = async (text?: string) => {
+    const content = (text ?? input).trim()
+   if (!content || loading || cooldown > 0) return 
+    setInput('')
+    const next = [...messages, { role: 'user' as const, content }]
+    setMessages(next)
+    setLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('ai-assistant', {
+  body: { messages: next.map(m => ({ role: m.role, content: m.content })) },
+})
+      if (error) throw error
+      if ((data as any)?.error) throw new Error((data as any).error)
+      setMessages([...next, { role: 'assistant', content: (data as any)?.reply || '(không có phản hồi)' }])
+    } catch (e: any) {
+      toast.error(e.message || 'Lỗi gọi AI')
+      setMessages(m => [...m, { role: 'assistant', content: '⚠️ ' + (e.message || 'Lỗi') }])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <>
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          className="fixed bottom-5 right-5 z-50 grid h-14 w-14 place-items-center rounded-full bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-elegant shadow-lg transition hover:scale-105"
+          title="Trợ lý AI"
+        >
+          <Sparkles className="h-6 w-6" />
+        </button>
+      )}
+
+      {open && (
+        <div className="fixed bottom-5 right-5 z-50 flex h-[600px] max-h-[85vh] w-[400px] max-w-[95vw] flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl">
+          <div className="flex items-center justify-between border-b bg-gradient-to-r from-primary to-primary/80 p-3 text-primary-foreground">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5" />
+              <div>
+                <div className="text-sm font-bold">Trợ lý AI</div>
+                <div className="text-[10px] opacity-90">Điều khiển nhà hàng bằng lệnh</div>
+              </div>
+            </div>
+            <button onClick={() => setOpen(false)} className="rounded p-1 hover:bg-white/20"><X className="h-4 w-4" /></button>
+          </div>
+
+          <ScrollArea className="flex-1 p-3">
+            <div className="space-y-3">
+              {messages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
+                    {m.role === 'assistant' ? (
+                      <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-ul:my-1 prose-table:my-1">
+                        <ReactMarkdown>{m.content}</ReactMarkdown>
+                      </div>
+                    ) : m.content}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-2 rounded-2xl bg-muted px-3 py-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Đang xử lý...
+                  </div>
+                </div>
+              )}
+              <div ref={endRef} />
+            </div>
+          </ScrollArea>
+
+          {messages.length <= 1 && (
+            <div className="flex flex-wrap gap-1 border-t p-2">
+              {SUGGESTIONS.map(s => (
+                <button key={s} onClick={() => send(s)} className="rounded-full border bg-muted/40 px-2 py-1 text-xs hover:bg-muted">{s}</button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2 border-t p-2">
+  <div className="flex flex-1 flex-col gap-1">
+    
+    <div className="flex gap-2">
+      <Input
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && !cooldown) send() }}
+        placeholder="Ra lệnh cho AI..."
+        disabled={loading || cooldown > 0}
+      />
+      <Button size="icon" onClick={() => send()} disabled={loading || !input.trim() || cooldown > 0}>
+        <Send className="h-4 w-4" />
+      </Button>
+    </div>
+  </div>
+</div>
+        </div>
+      )}
+    </>
+  )
+}

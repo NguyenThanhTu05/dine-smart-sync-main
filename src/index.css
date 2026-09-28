@@ -1,0 +1,101 @@
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Warm friendly Vietnamese restaurant palette */
+    --background: 36 100% 98%;          /* #fffbf5 cream */
+    --foreground: 220 13% 18%;          /* #1f2937 ink */
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 13% 18%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 13% 18%;
+
+    --primary: 0 72% 51%;               /* #dc2626 red */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 45 96% 76%;            /* #fde68a yellow */
+    --secondary-foreground: 220 13% 18%;
+
+    --muted: 36 60% 94%;
+    --muted-foreground: 220 9% 46%;
+
+    --accent: 45 96% 76%;
+    --accent-foreground: 220 13% 18%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 32 95% 54%;              /* orange for cleanup */
+    --warning-foreground: 0 0% 100%;
+
+    --table-empty: 220 9% 70%;          /* gray */
+    --table-serving: 142 71% 45%;       /* green */
+    --table-payment: 0 72% 51%;         /* red */
+    --table-cleanup: 32 95% 54%;        /* orange */
+
+    --border: 36 30% 88%;
+    --input: 36 30% 88%;
+    --ring: 0 72% 51%;
+
+    --radius: 0.875rem;
+
+    --shadow-soft: 0 4px 16px -4px hsl(0 72% 51% / 0.08);
+    --shadow-card: 0 2px 8px -2px hsl(220 13% 18% / 0.06);
+  }
+
+  .dark {
+    --background: 220 13% 10%;
+    --foreground: 36 30% 96%;
+    --card: 220 13% 14%;
+    --card-foreground: 36 30% 96%;
+    --popover: 220 13% 14%;
+    --popover-foreground: 36 30% 96%;
+    --primary: 0 72% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 45 70% 50%;
+    --secondary-foreground: 220 13% 10%;
+    --muted: 220 13% 18%;
+    --muted-foreground: 220 9% 65%;
+    --accent: 220 13% 18%;
+    --accent-foreground: 36 30% 96%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 22%;
+    --input: 220 13% 22%;
+    --ring: 0 72% 55%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body, #root { @apply h-full; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Be Vietnam Pro', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  .shadow-soft { box-shadow: var(--shadow-soft); }
+  .shadow-card { box-shadow: var(--shadow-card); }
+}
+@keyframes marquee {
+  0%   { transform: translateX(100%) }
+  100% { transform: translateX(-100%) }
+}
+.animate-marquee {
+  animation: marquee 10s linear infinite;
+}
+.scrollbar-thin::-webkit-scrollbar { width: 4px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgb(253 186 116); border-radius: 9999px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
