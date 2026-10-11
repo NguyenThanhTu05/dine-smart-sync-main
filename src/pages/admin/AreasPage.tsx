@@ -1,3 +1,4 @@
+import { TouchAreaSurface,TouchTableDnd,TouchTableSurface } from '@/components/tables/TouchTableDrag'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -9,7 +10,7 @@ import { deleteEmptyArea, deleteEmptyTable } from '@/lib/tableDeletion'
 import { getSharedBroadcastChannel } from '@/lib/tableGroup'
 import { cn } from '@/lib/utils'
 import { Link2,Plus,Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useRef,useState } from 'react'
 import { toast } from 'sonner'
 
 const STATUS_BG: Record<string, string> = {
@@ -26,6 +27,8 @@ export default function AreasPage() {
   const [newArea, setNewArea] = useState('')
   const [newTable, setNewTable] = useState<Record<string, { name: string; seats: number | string }>>({})
   const [draggedTableId, setDraggedTableId] = useState<string | null>(null)
+  const moveLock = useRef(false)
+  const [moveBusy,setMoveBusy] = useState(false)
 
   const safeAreas = hookAreas || []
   const safeTables = hookTables || []
@@ -111,55 +114,44 @@ export default function AreasPage() {
     e.preventDefault()
   }
 
-  const handleDropOnArea = async (e: React.DragEvent, targetAreaId: string) => {
-    e.preventDefault()
-    const tableId = e.dataTransfer.getData('text/plain') || draggedTableId
-    if (!tableId) return
-
-    const table = sortedTables.find(t => t.id === tableId)
-    if (!table) return
-    if (table.area_id === targetAreaId) return
-
-    const { error } = await supabase.rpc('restaurant_move_table', { p_source: tableId, p_area: targetAreaId })
-
-    if (error) {
-      toast.error('Lỗi chuyển khu vực: ' + error.message)
-    } else {
-      toast.success(`Đã chuyển ${table.name} sang khu vực mới`)
-      reload()
-      await broadcastLayoutChange()
-    }
-    setDraggedTableId(null)
+  const performMove = async (sourceId: string,target: { area?: string; table?: string }) => {
+    if (!canManageAreas || moveLock.current) return
+    const source = sortedTables.find(table => table.id === sourceId)
+    if (!source || source.status !== 'empty' || source.merged_group_id) return toast.error('Chỉ đổi vị trí bàn trống chưa ghép nhóm.')
+    if (target.table === sourceId || target.area === source.area_id) return
+    const destination = target.table ? sortedTables.find(table => table.id === target.table) : null
+    if (target.table && (!destination || destination.status !== 'empty' || destination.merged_group_id)) return toast.error('Bàn đích đang hoạt động hoặc ghép nhóm, không thể đổi vị trí.')
+    moveLock.current = true; setMoveBusy(true)
+    try {
+      const { error } = await supabase.rpc('restaurant_move_table',{ p_source: sourceId,...(target.area ? { p_area: target.area } : { p_target: target.table! }) })
+      if (error) throw error
+      await reload(); await broadcastLayoutChange(); toast.success('Đã cập nhật vị trí bàn')
+    } catch (error) { toast.error((error as { message?: string }).message ?? 'Không thể chuyển bàn'); await reload() }
+    finally { moveLock.current = false; setMoveBusy(false) }
   }
-
-  const handleDropOnTable = async (e: React.DragEvent, targetTable: RestaurantTable) => {
-    e.stopPropagation()
-    e.preventDefault()
-
-    const sourceTableId = e.dataTransfer.getData('text/plain') || draggedTableId
-    if (!sourceTableId || sourceTableId === targetTable.id) return
-
-    const sourceTable = sortedTables.find(t => t.id === sourceTableId)
-    if (!sourceTable) return
-
-    const { error } = await supabase.rpc('restaurant_move_table', { p_source: sourceTable.id, p_target: targetTable.id })
-    if (error) { toast.error(error.message); await reload() }
-    else {
-      toast.success(sourceTable.area_id === targetTable.area_id
-        ? `Đã đổi vị trí ${sourceTable.name} ↔ ${targetTable.name}`
-        : `Đã chuyển ${sourceTable.name} sang khu vực của ${targetTable.name}`)
-      await reload()
-      await broadcastLayoutChange()
-    }
+  const handleDropOnArea = (event: React.DragEvent,targetAreaId: string) => {
+    event.preventDefault()
+    const sourceId = event.dataTransfer.getData('text/plain') || draggedTableId
     setDraggedTableId(null)
+    if (sourceId) void performMove(sourceId,{ area: targetAreaId })
   }
+  const handleDropOnTable = (event: React.DragEvent,targetTable: RestaurantTable) => {
+    event.stopPropagation(); event.preventDefault()
+    const sourceId = event.dataTransfer.getData('text/plain') || draggedTableId
+    setDraggedTableId(null)
+    if (sourceId) void performMove(sourceId,{ table: targetTable.id })
+  }
+  const draggedTable = sortedTables.find(table => table.id === draggedTableId)
 
   return (
+    <TouchTableDnd onStart={setDraggedTableId} onCancel={() => setDraggedTableId(null)}
+      onEnd={(source,target) => { setDraggedTableId(null); if (target?.kind === 'table') void performMove(source,{ table: target.id }); else if (target?.kind === 'area') void performMove(source,{ area: target.id }) }}
+      overlay={draggedTable && <div className={cn('rounded-xl border-2 p-3 text-sm font-semibold shadow-xl',STATUS_BG[draggedTable.status])}><b>{draggedTable.name}</b><div className="text-[10px]">{draggedTable.seats} chỗ • STT:{draggedTable.sort_order || 0}</div></div>}>
     <div className="space-y-6 p-4 md:p-6 max-w-7xl mx-auto">
       <div>
         <h1 className="text-2xl font-bold md:text-3xl">Khu vực &amp; Bàn</h1>
         <p className="text-xs text-muted-foreground mt-1">
-          💡 Hướng dẫn: Kéo khối bàn trống độc lập để thay đổi vị trí thứ tự hoặc phân khu. <span className="text-destructive font-semibold">Các bàn đang ăn nhậu hoặc đang được ghép nhóm sẽ bị khóa cứng vị trí kéo thả.</span>
+          💡 Hướng dẫn: Nhấn giữ rồi kéo cả thẻ bàn trống độc lập để thay đổi vị trí thứ tự hoặc phân khu. <span className="text-destructive font-semibold">Các bàn đang ăn nhậu hoặc đang được ghép nhóm sẽ bị khóa cứng vị trí kéo thả.</span>
         </p>
       </div>
 
@@ -177,8 +169,9 @@ export default function AreasPage() {
         const areaTables = sortedTables.filter(t => t.area_id === a.id)
         const areaActive = areaTables.some(t => t.status !== 'empty' || !!t.merged_group_id)
         return (
-          <Card
+          <TouchAreaSurface
             key={a.id}
+            areaId={a.id}
             className="p-5 border shadow-sm bg-background transition-colors"
             onDragOver={handleDragOver}
             onDrop={(e) => handleDropOnArea(e, a.id)}
@@ -201,9 +194,12 @@ export default function AreasPage() {
                 const isCurrentDragged = draggedTableId === t.id
 
                 return (
-                  <div
+                  <TouchTableSurface
                     key={t.id}
-                    draggable={!shouldBlockDrag}
+                    tableId={t.id}
+                    disabledDrag={!canManageAreas || shouldBlockDrag || moveBusy}
+                    draggable={canManageAreas && !shouldBlockDrag && !moveBusy}
+                    onDragEnd={() => setDraggedTableId(null)}
                     onDragStart={(e) => handleDragStart(e, t)}
                     onDragOver={handleDragOver}
                     onDrop={(e) => handleDropOnTable(e, t)}
@@ -228,10 +224,12 @@ export default function AreasPage() {
                       onClick={() => delTable(t.id)}
                       className={cn("rounded-full p-1 transition-colors shrink-0 ml-1", shouldBlockDrag ? "hidden" : "text-muted-foreground hover:text-destructive hover:bg-muted")}
                       disabled={shouldBlockDrag}
+                      onMouseDown={event => event.stopPropagation()}
+                      onTouchStart={event => event.stopPropagation()}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
-                  </div>
+                  </TouchTableSurface>
                 )
               })}
             </div>
@@ -253,9 +251,10 @@ export default function AreasPage() {
               />
               <Button size="sm" onClick={() => addTable(a.id)} className="h-9 text-xs"><Plus className="mr-1 h-3.5 w-3.5" />Tạo bàn</Button>
             </div>
-          </Card>
+          </TouchAreaSurface>
         )
       })}
     </div>
+    </TouchTableDnd>
   )
 }

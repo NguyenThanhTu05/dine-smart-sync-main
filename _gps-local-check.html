@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiểm tra GPS local</title>
+<style>body{font:16px system-ui;max-width:700px;margin:40px auto;padding:20px}button{padding:14px;font:inherit}pre{white-space:pre-wrap;background:#f5f5f5;padding:16px}</style>
+<h1>Kiểm tra GPS local</h1>
+<p>Chỉ đọc quyền và kiểm tra truy cập vị trí. Không chấm công, không gọi Supabase, không hiển thị hoặc lưu tọa độ.</p>
+<button id="check">Kiểm tra vị trí</button>
+<p>Bản kiểm tra 2 — mỗi phản hồi được ghi riêng, không gộp lỗi và thành công. Lịch sử chỉ ở trang này và mất khi tải lại.</p>
+<pre id="result">Chưa kiểm tra.</pre>
+<h2>Lịch sử phản hồi</h2>
+<pre id="history">Chưa có phản hồi.</pre>
+<script>
+const button = document.getElementById('check');
+const output = document.getElementById('result');
+const historyOutput = document.getElementById('history');
+const history = [];
+let attempt = 0;
+button.onclick = async () => {
+  if (button.disabled) return;
+  button.disabled = true;
+  const id = ++attempt;
+  const started = performance.now();
+  let callback = 0;
+  let permission = 'unknown';
+  const base = { version: 2, attempt: id, secureContext: window.isSecureContext, visibility: document.visibilityState };
+  const record = outcome => {
+    // Build a fresh event even if the browser unexpectedly invokes both callbacks.
+    const event = { ...base, permission, callback: ++callback, elapsedMs: Math.round(performance.now() - started), ...outcome };
+    history.push(event);
+    if (history.length > 20) history.shift();
+    output.textContent = JSON.stringify(event, null, 2);
+    historyOutput.textContent = JSON.stringify(history, null, 2);
+    if (id === attempt) button.disabled = false;
+  };
+  output.textContent = JSON.stringify({ ...base, status: 'Đang kiểm tra...' }, null, 2);
+  try { permission = (await navigator.permissions.query({ name: 'geolocation' })).state; } catch {}
+  if (!navigator.geolocation) {
+    record({ status: 'Không hỗ trợ GPS', detail: 'Geolocation API unavailable' }); return;
+  }
+  try {
+    navigator.geolocation.getCurrentPosition(() => {
+      record({ status: 'GPS truy cập thành công' });
+    }, error => {
+      record({ status: 'GPS truy cập thất bại', code: error.code, detail: String(error.message).slice(0, 300) });
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  } catch {
+    record({ status: 'Không gọi được GPS', detail: 'Geolocation API threw synchronously' });
+  }
+};
+</script>
+</html>

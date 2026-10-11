@@ -4,7 +4,7 @@ import { Card } from '@/components/ui/card'
 import { useAuth } from '@/contexts/authState'
 import { supabase } from '@/integrations/supabase/client'
 import { errorMessage } from '@/lib/errors'
-import { getCurrentPosition,haversineMeters } from '@/lib/geo'
+import { getCurrentPosition,getLocationPermission,getLocationDiagnostic,haversineMeters } from '@/lib/geo'
 import { Loader2,LogIn,LogOut,MapPin } from 'lucide-react'
 import { useCallback,useEffect,useRef,useState } from 'react'
 import { toast } from 'sonner'
@@ -20,6 +20,11 @@ export function AttendanceCard() {
   const [busy, setBusy] = useState(false)
   const [pos, setPos] = useState<{ lat: number; lon: number; dist: number } | null>(null)
   const [locating, setLocating] = useState(false)
+  const [positionError, setPositionError] = useState<string | null>(null)
+  const [positionDiagnostic, setPositionDiagnostic] = useState<string | null>(null)
+  const positionInFlight = useRef(false)
+  const positionVersion = useRef(0)
+  const invalidatePosition = useCallback(() => { positionVersion.current++ }, [])
 
   const loadVersion = useRef(0)
   const invalidateloadVersion = useCallback(() => { loadVersion.current++ }, [])
@@ -52,18 +57,70 @@ export function AttendanceCard() {
   }, [load,user?.id,invalidateloadVersion])
 
   const latitude = settings?.latitude, longitude = settings?.longitude
-  const refreshPos = useCallback(async () => {
-    if (latitude == null || longitude == null) return
+  const refreshPos = useCallback(async (notifyOnError = true) => {
+    if (latitude == null || longitude == null || positionInFlight.current) return
+    positionInFlight.current = true
+    const version = ++positionVersion.current
     setLocating(true)
+    setPositionError(null)
+    setPositionDiagnostic(null)
     try {
       const p = await getCurrentPosition()
+      if (version !== positionVersion.current) return
       const dist = haversineMeters(p.coords.latitude, p.coords.longitude, latitude, longitude)
       setPos({ lat: p.coords.latitude, lon: p.coords.longitude, dist })
     } catch (e: unknown) {
-      toast.error(errorMessage(e) ?? 'Không lấy được vị trí')
-    } finally { setLocating(false) }
+      if (version !== positionVersion.current) return
+      setPos(null)
+      const message = errorMessage(e) ?? 'Không lấy được vị trí'
+      setPositionError(message)
+      setPositionDiagnostic(import.meta.env.DEV ? getLocationDiagnostic(e) : null)
+      if (notifyOnError) toast.error(message)
+    } finally {
+      if (version === positionVersion.current) { positionInFlight.current = false; setLocating(false) }
+    }
   }, [latitude,longitude])
-  useEffect(() => { void refreshPos() }, [refreshPos])
+  useEffect(() => {
+    let active = true
+    let permissionStatus: PermissionStatus | undefined
+    setPos(null)
+    setLocating(false)
+    setPositionError(null)
+    setPositionDiagnostic(null)
+    positionInFlight.current = false
+    const refreshAutomatically = async () => {
+      if (!active || document.visibilityState === 'hidden' || positionInFlight.current) return
+      const permission = await getLocationPermission()
+      if (!active || document.hidden) return
+      if (permission === 'granted') { void refreshPos(false); return }
+      if (!positionInFlight.current) {
+        setPos(null)
+        setPositionDiagnostic(null)
+        setPositionError(permission === 'denied'
+          ? 'Vị trí đang bị chặn. Kiểm tra quyền vị trí của trang và thiết bị.'
+          : 'Nhấn Cập nhật vị trí để cho phép truy cập GPS.')
+      }
+    }
+    const onAccessChange = () => { void refreshAutomatically() }
+    void refreshAutomatically()
+    // React to a newly granted one-time permission without starting a second request.
+    if (navigator.permissions?.query) {
+      void navigator.permissions.query({ name: 'geolocation' }).then(status => {
+        if (!active) return
+        permissionStatus = status
+        status.addEventListener('change', onAccessChange)
+      }).catch(() => { /* Manual GPS remains available on unsupported browsers. */ })
+    }
+    window.addEventListener('focus', onAccessChange)
+    document.addEventListener('visibilitychange', onAccessChange)
+    return () => {
+      active = false
+      invalidatePosition()
+      permissionStatus?.removeEventListener('change', onAccessChange)
+      window.removeEventListener('focus', onAccessChange)
+      document.removeEventListener('visibilitychange', onAccessChange)
+    }
+  }, [refreshPos,invalidatePosition])
 
   const lastIn = [...today].reverse().find(l => l.kind === 'in')
   const lastOut = [...today].reverse().find(l => l.kind === 'out')
@@ -90,7 +147,7 @@ export function AttendanceCard() {
     <Card className="space-y-3 p-4">
       <div className="flex items-center justify-between">
         <h3 className="flex items-center gap-2 font-bold"><MapPin className="h-4 w-4 text-primary" />Điểm danh GPS</h3>
-        <Button size="sm" variant="outline" onClick={refreshPos} disabled={locating}>
+        <Button size="sm" variant="outline" onClick={() => { void refreshPos() }} disabled={locating}>
           {locating ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Cập nhật vị trí'}
         </Button>
       </div>
@@ -105,7 +162,10 @@ export function AttendanceCard() {
                 Khoảng cách tới quán: <b className={inRange ? 'text-success' : 'text-destructive'}>{Math.round(pos.dist)} m</b>
                 {' '}/ cho phép {settings.radius_m} m
               </>
-            ) : 'Đang chờ vị trí GPS...'}
+            ) : positionError ?? 'Đang chờ vị trí GPS...'}
+            {import.meta.env.DEV && !pos && positionDiagnostic && (
+              <p className="mt-2 break-words font-mono text-xs">Chi tiết GPS: {positionDiagnostic}</p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2">

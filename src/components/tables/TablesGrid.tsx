@@ -1,3 +1,4 @@
+import { TouchTableDnd,TouchTableSurface } from '@/components/tables/TouchTableDrag'
 import { Badge } from '@/components/ui/badge'
 import { RestaurantTable,STATUS_COLOR,STATUS_LABEL,TableStatus,useTables } from '@/hooks/useTables'
 import { mergeTables,readableError } from '@/lib/restaurantTransactions'
@@ -68,7 +69,7 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
 
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
-  const longPressRef = useRef<number | null>(null)
+
 
   const tableById = (id: string) => tables.find(t => t.id === id) ?? null
 
@@ -88,36 +89,6 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
 
     toast.success(`Đã ghép ${s.name} với ${t.name}`)
     reload()
-  }
-
-  const onTouchStart = (t: RestaurantTable) => () => {
-    if (!enableMerge) return
-    if (t.status !== 'empty') {
-      toast.error(`Bàn ${t.name} đang hoạt động, không được phép dịch chuyển hay gộp cụm!`)
-      return
-    }
-    longPressRef.current = window.setTimeout(() => {
-      setDragId(t.id)
-      if (navigator.vibrate) navigator.vibrate(40)
-    }, 350)
-  }
-
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (!dragId) {
-      if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null }
-      return
-    }
-    e.preventDefault()
-    const touch = e.touches[0]
-    const el = document.elementFromPoint(touch.clientX, touch.clientY)
-    const tableEl = el?.closest('[data-table-id]') as HTMLElement | null
-    setOverId(tableEl?.dataset.tableId ?? null)
-  }
-
-  const onTouchEnd = () => {
-    if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null }
-    if (dragId && overId && dragId !== overId) performMerge(dragId, overId)
-    setDragId(null); setOverId(null)
   }
 
   const clustersByArea = useMemo(() => {
@@ -150,8 +121,10 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
     const isColorRestricted = currentStatus !== 'empty'
 
     return (
-      <div
+      <TouchTableSurface
         key={t.id}
+        tableId={t.id}
+        disabledDrag={!draggable}
         data-table-id={t.id}
         draggable={draggable}
         onDragStart={(e) => {
@@ -176,9 +149,6 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
           if (src) performMerge(src, t.id)
           setDragId(null); setOverId(null)
         }}
-        onTouchStart={onTouchStart(t)}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
         onClick={() => { if (!dragId) onSelectTable({ ...t, status: currentStatus, merged_group_id: t.merged_group_id }) }}
         className={cn(
           'relative flex flex-1 aspect-square min-w-0 flex-col items-center justify-center p-2 shadow-card transition-colors duration-300 select-none',
@@ -193,13 +163,17 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
         <div className="text-base font-bold leading-tight md:text-xl">{t.name}</div>
         <div className="mt-0.5 text-[10px] opacity-90 md:text-xs">{t.seats} chỗ</div>
         <Badge variant="secondary" className="absolute bottom-1 text-[9px]">{STATUS_LABEL[currentStatus]}</Badge>
-      </div>
+      </TouchTableSurface>
     )
   }
 
   if (loading) return <div className="p-4 text-sm text-muted-foreground">Đang tải sơ đồ bàn...</div>
 
+  const draggedTable = dragId ? tableById(dragId) : null
   return (
+    <TouchTableDnd onStart={setDragId} onOver={setOverId} onCancel={() => { setDragId(null); setOverId(null) }}
+      onEnd={(source,target) => { setDragId(null); setOverId(null); if (target?.kind === 'table') void performMerge(source,target.id) }}
+      overlay={draggedTable && <div className={cn('relative flex aspect-square flex-col items-center justify-center rounded-2xl p-2 shadow-lg',STATUS_COLOR[localStatuses[draggedTable.id] ?? draggedTable.status])}><div className="text-base font-bold md:text-xl">{draggedTable.name}</div><div className="text-[10px] md:text-xs">{draggedTable.seats} chỗ</div><Badge variant="secondary" className="absolute bottom-1 text-[9px]">{STATUS_LABEL[localStatuses[draggedTable.id] ?? draggedTable.status]}</Badge></div>}>
     <div className="space-y-6 p-4 md:p-6">
       {header}
       {areas.map(a => {
@@ -236,5 +210,6 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
         )
       })}
     </div>
+    </TouchTableDnd>
   )
 }
