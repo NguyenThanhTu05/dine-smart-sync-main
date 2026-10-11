@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react'
-import { useAuth } from '@/contexts/AuthContext'
-import { supabase } from '@/integrations/supabase/client'
-import { Navigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { ChefHat, Loader2 } from 'lucide-react'
+import { useAuth } from '@/contexts/authState'
+import { supabase } from '@/integrations/supabase/client'
+import { passwordInput } from '@/lib/inputValidation'
+import { ChefHat,Loader2 } from 'lucide-react'
+import { useEffect,useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 export default function Login() {
@@ -53,7 +54,7 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
     const hasAt = raw.includes('@')
 
     // Nếu có @ nhưng không phải @gmail.com → báo lỗi luôn
-    if (hasAt && !raw.endsWith('@gmail.com')) {
+    if (hasAt && !/^[A-Za-z0-9_.+-]+@gmail\.com$/.test(raw)) {
       toast.error('Vui lòng nhập đúng định dạng @gmail.com')
       return
     }
@@ -119,10 +120,7 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
 
   const onResetPassword = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (newPassword.length < 6) {
-      toast.error('Mật khẩu phải có ít nhất 6 ký tự')
-      return
-    }
+    try { passwordInput(newPassword) } catch (error) { toast.error((error as Error).message); return }
     if (newPassword !== confirmPassword) {
       toast.error('Mật khẩu không khớp')
       return
@@ -134,11 +132,6 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
       toast.error('Không thể đổi mật khẩu, thử lại sau')
       return
     }
-    await supabase
-      .from('profiles')
-      .update({ visible_password: newPassword })
-      .eq('id', (await supabase.auth.getUser()).data.user?.id ?? '')
-
     toast.success('Đổi mật khẩu thành công!')
     await supabase.auth.signOut()
     resetForgot()

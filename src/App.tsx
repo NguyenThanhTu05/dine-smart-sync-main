@@ -1,29 +1,31 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { RequireRole } from "@/components/RequireRole";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider, useAuth } from "@/contexts/AuthContext";
-import { RequireRole } from "@/components/RequireRole";
-import Login from "./pages/Login";
-import NotFound from "./pages/NotFound";
-import StaffLayout from "./layouts/StaffLayout";
-import StaffTablesPage from "./pages/staff/StaffTables";
-import ContactsPage from "./pages/shared/ContactsPage";
-import MePage from "./pages/shared/MePage";
-import DesktopLayout from "./layouts/DesktopLayout";
-import CashierTablesPage from "./pages/cashier/CashierTables";
-import BillsPage from "./pages/cashier/BillsPage";
-import KitchenLayout from "./layouts/KitchenLayout";
-import KitchenPage from "./pages/kitchen/KitchenPage";
-import AdminLayout from "./layouts/AdminLayout";
-import AdminDashboard from "./pages/admin/AdminDashboard";
-import StaffManagement from "./pages/admin/StaffManagement";
-import MenuAndInventory from "./pages/admin/MenuAndInventory";
-import AreasPage from "./pages/admin/AreasPage";
-import PaymentSettings from "./pages/admin/PaymentSettings";
+import { AuthProvider } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/authState';
+import { QueryClient,QueryClientProvider } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import AIAssistantWidget from '@/components/AIAssistantWidget' 
+import { lazy,Suspense } from 'react';
+import { BrowserRouter,Navigate,Route,Routes } from "react-router-dom";
+import AdminLayout from "./layouts/AdminLayout";
+import DesktopLayout from "./layouts/DesktopLayout";
+import KitchenLayout from "./layouts/KitchenLayout";
+import StaffLayout from "./layouts/StaffLayout";
+const AIAssistantWidget = lazy(() => import('@/components/AIAssistantWidget'));
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'));
+const AreasPage = lazy(() => import('./pages/admin/AreasPage'));
+const MenuAndInventory = lazy(() => import('./pages/admin/MenuAndInventory'));
+const PaymentSettings = lazy(() => import('./pages/admin/PaymentSettings'));
+const StaffManagement = lazy(() => import('./pages/admin/StaffManagement'));
+const BillsPage = lazy(() => import('./pages/cashier/BillsPage'));
+const CashierTablesPage = lazy(() => import('./pages/cashier/CashierTables'));
+const KitchenPage = lazy(() => import('./pages/kitchen/KitchenPage'));
+const Login = lazy(() => import('./pages/Login'));
+const NotFound = lazy(() => import('./pages/NotFound'));
+const ContactsPage = lazy(() => import('./pages/shared/ContactsPage'));
+const MePage = lazy(() => import('./pages/shared/MePage'));
+const StaffTablesPage = lazy(() => import('./pages/staff/StaffTables'));
 
 const queryClient = new QueryClient();
 
@@ -37,7 +39,7 @@ function RootRedirect() {
 function AdminOnly() {
   const { role, isRecovery } = useAuth()
   if (role !== 'admin' || isRecovery) return null
-  return <AIAssistantWidget />
+  return <Suspense fallback={null}><AIAssistantWidget /></Suspense>
 }
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -46,6 +48,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <AuthProvider>
+          <Suspense fallback={<div className="grid h-screen place-items-center"><Loader2 className="animate-spin"/></div>}>
           <Routes>
             <Route path="/" element={<RootRedirect />} />
             <Route path="/login" element={<Login />} />
@@ -85,6 +88,7 @@ const App = () => (
 
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
           <AdminOnly />
         </AuthProvider>
       </BrowserRouter>

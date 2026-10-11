@@ -1,13 +1,16 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { useTables, RestaurantTable } from '@/hooks/useTables'
-import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Trash2, Plus, Link2 } from 'lucide-react'
-import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
+import { useAuth } from '@/contexts/authState'
+import { RestaurantTable,useTables } from '@/hooks/useTables'
+import { supabase } from '@/integrations/supabase/client'
+import { decimalInput,requiredText } from '@/lib/inputValidation'
+import { deleteEmptyArea, deleteEmptyTable } from '@/lib/tableDeletion'
 import { getSharedBroadcastChannel } from '@/lib/tableGroup'
+import { cn } from '@/lib/utils'
+import { Link2,Plus,Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { toast } from 'sonner'
 
 const STATUS_BG: Record<string, string> = {
   empty: 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200/80',
@@ -17,13 +20,15 @@ const STATUS_BG: Record<string, string> = {
 }
 
 export default function AreasPage() {
+  const { role } = useAuth()
+  const canManageAreas = role === 'admin'
   const { areas: hookAreas, tables: hookTables, reload } = useTables()
   const [newArea, setNewArea] = useState('')
-  const [newTable, setNewTable] = useState<Record<string, { name: string; seats: number }>>({})
+  const [newTable, setNewTable] = useState<Record<string, { name: string; seats: number | string }>>({})
   const [draggedTableId, setDraggedTableId] = useState<string | null>(null)
 
-  const safeAreas = (hookAreas || []) as any[]
-  const safeTables = (hookTables || []) as any[]
+  const safeAreas = hookAreas || []
+  const safeTables = hookTables || []
   const sortedTables = [...safeTables].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
 
   // Dùng shared channel đã subscribe sẵn — không tạo channel mới mỗi lần gọi
@@ -36,30 +41,40 @@ export default function AreasPage() {
   }
 
   const addArea = async () => {
-    if (!newArea) return
-    await supabase.from('areas').insert({ name: newArea, sort_order: safeAreas.length + 1 })
+    if (!canManageAreas) return
+    let name: string
+    try { name = requiredText(newArea, 'Tên khu vực') } catch (error) { return toast.error((error as Error).message) }
+    const { error } = await supabase.from('areas').insert({ name, sort_order: safeAreas.length + 1 })
+    if (error) return toast.error(error.message)
     setNewArea('')
     reload()
     await broadcastLayoutChange()
   }
 
   const delArea = async (id: string) => {
+    if (!canManageAreas) return
     if (!confirm('Xóa khu vực này?')) return
-    await supabase.from('areas').delete().eq('id', id)
+    try { await deleteEmptyArea(id) } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Không thể xóa khu vực.')
+      await reload()
+      return
+    }
     reload()
     await broadcastLayoutChange()
   }
 
   const addTable = async (areaId: string) => {
     const v = newTable[areaId]
-    if (!v?.name) return
+    let name: string, seats: number
+    try { name = requiredText(v?.name, 'Tên bàn'); seats = decimalInput(v?.seats, 'Số ghế', 0, 1000, true) } catch (error) { return toast.error((error as Error).message) }
     const currentAreaTables = sortedTables.filter(t => t.area_id === areaId)
-    await supabase.from('restaurant_tables').insert({
+    const { error } = await supabase.from('restaurant_tables').insert({
       area_id: areaId,
-      name: v.name,
-      seats: v.seats || 4,
+      name,
+      seats,
       sort_order: currentAreaTables.length + 1,
     })
+    if (error) return toast.error(error.message)
     setNewTable(s => ({ ...s, [areaId]: { name: '', seats: 4 } }))
     reload()
     await broadcastLayoutChange()
@@ -67,13 +82,18 @@ export default function AreasPage() {
 
   const delTable = async (id: string) => {
     if (!confirm('Xóa bàn này?')) return
-    await supabase.from('restaurant_tables').delete().eq('id', id)
-    reload()
-    await broadcastLayoutChange()
+    try {
+      await deleteEmptyTable(id)
+      await reload()
+      await broadcastLayoutChange()
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Không thể xóa bàn.')
+      await reload()
+    }
   }
 
   const handleDragStart = (e: React.DragEvent, table: RestaurantTable) => {
-    if (table.status !== 'empty') {
+    if (!canManageAreas || table.status !== 'empty') {
       e.preventDefault()
       toast.error(`Bàn ${table.name} đang hoạt động, không được phép thay đổi vị trí thứ tự!`)
       return
@@ -100,15 +120,7 @@ export default function AreasPage() {
     if (!table) return
     if (table.area_id === targetAreaId) return
 
-    const targetAreaTablesCount = sortedTables.filter(t => t.area_id === targetAreaId).length
-
-    const { error } = await supabase
-      .from('restaurant_tables')
-      .update({
-        area_id: targetAreaId,
-        sort_order: targetAreaTablesCount + 1,
-      })
-      .eq('id', tableId)
+    const { error } = await supabase.rpc('restaurant_move_table', { p_source: tableId, p_area: targetAreaId })
 
     if (error) {
       toast.error('Lỗi chuyển khu vực: ' + error.message)
@@ -130,43 +142,13 @@ export default function AreasPage() {
     const sourceTable = sortedTables.find(t => t.id === sourceTableId)
     if (!sourceTable) return
 
-    if (sourceTable.area_id === targetTable.area_id) {
-      const sourceOrder = sourceTable.sort_order ?? 0
-      const targetOrder = targetTable.sort_order ?? 0
-
-      if (sourceOrder === targetOrder) {
-        const areaTables = sortedTables
-          .filter(t => t.area_id === sourceTable.area_id)
-          .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-
-        const updates = areaTables.map((t, idx) => ({ id: t.id, sort_order: idx + 1 }))
-        const newSourceIdx = updates.findIndex(u => u.id === sourceTable.id)
-        const newTargetIdx = updates.findIndex(u => u.id === targetTable.id)
-
-        const tmp = updates[newSourceIdx].sort_order
-        updates[newSourceIdx].sort_order = updates[newTargetIdx].sort_order
-        updates[newTargetIdx].sort_order = tmp
-
-        await Promise.all(
-          updates.map(u => supabase.from('restaurant_tables').update({ sort_order: u.sort_order }).eq('id', u.id))
-        )
-      } else {
-        await Promise.all([
-          supabase.from('restaurant_tables').update({ sort_order: targetOrder }).eq('id', sourceTable.id),
-          supabase.from('restaurant_tables').update({ sort_order: sourceOrder }).eq('id', targetTable.id),
-        ])
-      }
-      toast.success(`Đã đổi vị trí ${sourceTable.name} ↔ ${targetTable.name}`)
-      reload()
-      await broadcastLayoutChange()
-    } else {
-      await supabase.from('restaurant_tables').update({
-        area_id: targetTable.area_id,
-        sort_order: targetTable.sort_order,
-      }).eq('id', sourceTable.id)
-
-      toast.success(`Đã chuyển ${sourceTable.name} sang khu vực của ${targetTable.name}`)
-      reload()
+    const { error } = await supabase.rpc('restaurant_move_table', { p_source: sourceTable.id, p_target: targetTable.id })
+    if (error) { toast.error(error.message); await reload() }
+    else {
+      toast.success(sourceTable.area_id === targetTable.area_id
+        ? `Đã đổi vị trí ${sourceTable.name} ↔ ${targetTable.name}`
+        : `Đã chuyển ${sourceTable.name} sang khu vực của ${targetTable.name}`)
+      await reload()
       await broadcastLayoutChange()
     }
     setDraggedTableId(null)
@@ -188,11 +170,12 @@ export default function AreasPage() {
           placeholder="Tên khu vực mới (vd: Tầng lửng, VIP...)"
           className="max-w-md"
         />
-        <Button onClick={addArea}><Plus className="mr-1 h-4 w-4" />Thêm khu vực</Button>
+        <Button disabled={!canManageAreas} onClick={addArea}><Plus className="mr-1 h-4 w-4" />Thêm khu vực</Button>
       </Card>
 
       {safeAreas.map((a: { id: string; name: string }) => {
         const areaTables = sortedTables.filter(t => t.area_id === a.id)
+        const areaActive = areaTables.some(t => t.status !== 'empty' || !!t.merged_group_id)
         return (
           <Card
             key={a.id}
@@ -205,7 +188,7 @@ export default function AreasPage() {
                 <h2 className="text-base font-bold text-foreground">{a.name}</h2>
                 <p className="text-[11px] text-muted-foreground">Khu vực chứa {areaTables.length} bàn ăn</p>
               </div>
-              <Button size="sm" variant="ghost" onClick={() => delArea(a.id)} className="hover:bg-destructive/10 h-8 w-8 p-0">
+              <Button disabled={!canManageAreas || areaActive} title={areaActive ? "Khu vực có bàn đang hoạt động hoặc ghép nhóm; không thể xóa." : "Xóa khu vực"} size="sm" variant="ghost" onClick={() => delArea(a.id)} className="hover:bg-destructive/10 h-8 w-8 p-0">
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
             </div>
@@ -243,8 +226,8 @@ export default function AreasPage() {
                     <button
                       type="button"
                       onClick={() => delTable(t.id)}
-                      className={cn("rounded-full p-1 transition-colors shrink-0 ml-1", isColorRestricted ? "hidden" : "text-muted-foreground hover:text-destructive hover:bg-muted")}
-                      disabled={isColorRestricted}
+                      className={cn("rounded-full p-1 transition-colors shrink-0 ml-1", shouldBlockDrag ? "hidden" : "text-muted-foreground hover:text-destructive hover:bg-muted")}
+                      disabled={shouldBlockDrag}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -265,7 +248,8 @@ export default function AreasPage() {
                 type="number"
                 placeholder="Số ghế"
                 value={newTable[a.id]?.seats ?? 4}
-                onChange={(e) => setNewTable(s => ({ ...s, [a.id]: { ...(s[a.id] ?? { name: '' }), seats: Number(e.target.value) } }))}
+                min="1" step="1" max="1000"
+                onChange={(e) => setNewTable(s => ({ ...s, [a.id]: { ...(s[a.id] ?? { name: '' }), seats: e.target.value } }))}
               />
               <Button size="sm" onClick={() => addTable(a.id)} className="h-9 text-xs"><Plus className="mr-1 h-3.5 w-3.5" />Tạo bàn</Button>
             </div>

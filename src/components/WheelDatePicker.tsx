@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
-import { CalendarIcon } from 'lucide-react'
+import { Popover,PopoverContent,PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+import { CalendarIcon } from 'lucide-react'
+import { useEffect,useRef,useState } from 'react'
 
 const ITEM_H = 36
 const VISIBLE = 5 // odd, must match padding (VISIBLE-1)/2
@@ -21,12 +21,14 @@ function Wheel({ items, value, onChange, formatter }: {
     if (!ref.current) return
     ref.current.scrollTop = idx * ITEM_H
   }, [idx])
+  useEffect(() => () => { if (tRef.current) window.clearTimeout(tRef.current) }, [])
 
   const onScroll = () => {
     if (!ref.current) return
     if (tRef.current) window.clearTimeout(tRef.current)
     tRef.current = window.setTimeout(() => {
-      const el = ref.current!
+      const el = ref.current
+      if (!el) return
       const i = Math.round(el.scrollTop / ITEM_H)
       const clamped = Math.max(0, Math.min(items.length - 1, i))
       el.scrollTo({ top: clamped * ITEM_H, behavior: 'smooth' })
@@ -111,11 +113,14 @@ export function WheelDatePicker({ value, onChange, placeholder = 'Chọn ngày',
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => {
+      if (next) { const p = parse(value); setD(p.d); setM(p.m); setY(p.y) }
+      setOpen(next)
+    }}>
       <PopoverTrigger asChild>
         <Button variant="outline" className={cn('w-full justify-start font-normal', !value && 'text-muted-foreground', className)}>
           <CalendarIcon className="mr-2 h-4 w-4" />
-          {value ? `${String(safeD).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}` : placeholder}
+          {value ? `${String(init.d).padStart(2, '0')}/${String(init.m).padStart(2, '0')}/${init.y}` : placeholder}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[300px] p-3" align="start">

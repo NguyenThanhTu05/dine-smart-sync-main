@@ -1,14 +1,16 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Search, User, LayoutGrid, LogOut, ChefHat } from 'lucide-react'
-import { useAuth } from '@/contexts/AuthContext'
-import { NumberBadge, useGlobalCounts } from '@/hooks/useGlobalCounts'
-import { Button } from '@/components/ui/button'
-import { ROLE_LABEL } from '@/lib/roles'
-import { useState, useEffect } from 'react'
-import { supabase } from '@/integrations/supabase/client'
+import { NumberBadge } from '@/components/NumberBadge';
+import { Button } from '@/components/ui/button';
+import { useAuth } from '@/contexts/authState';
+import { useGlobalCounts } from '@/hooks/useGlobalCounts';
+import { supabase } from '@/integrations/supabase/client';
+import type { LucideIcon } from 'lucide-react';
+import { ChefHat,LayoutGrid,LogOut,User } from 'lucide-react';
+import { useEffect,useState } from 'react';
+import { NavLink,Outlet,useLocation } from 'react-router-dom';
+interface LayoutTab {to:string;icon:LucideIcon;label:string;badge?:number;end?:boolean}
 
 export default function StaffLayout() {
-  const { signOut, user, role } = useAuth()
+  const { signOut, user } = useAuth()
   const { tableAlerts } = useGlobalCounts()
   const loc = useLocation()
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
@@ -18,7 +20,7 @@ export default function StaffLayout() {
       .then(({ data }) => setAvatarUrl(data?.avatar_url ?? null))
   }, [user?.id])
   
-  const tabs = [
+  const tabs: LayoutTab[] = [
     { to: '/staff', icon: LayoutGrid, label: 'Sơ đồ bàn', badge: tableAlerts, end: true },
     
     { to: '/staff/me', icon: User,label: 'Tôi', badge: 0 },
@@ -45,12 +47,12 @@ export default function StaffLayout() {
         
         <nav className="flex-1 space-y-0.5 p-2">
           {tabs.map(t => {
-            const active = (t as any).end ? loc.pathname === t.to : loc.pathname.startsWith(t.to)
+            const active = t.end ? loc.pathname === t.to : loc.pathname.startsWith(t.to)
             return (
               <NavLink 
                 key={t.to} 
                 to={t.to} 
-                end={(t as any).end}
+                end={t.end}
                 className={`relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                   active ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
                 }`}
@@ -63,7 +65,7 @@ export default function StaffLayout() {
                 {t.label}
 
                 {/* ĐƯA XUỐNG ĐÂY: Để căn theo góc trên bên phải của cả thanh menu */}
-                <NumberBadge n={t.badge}/>
+                <NumberBadge n={t.badge ?? 0}/>
               </NavLink>
             )
           })}
@@ -114,7 +116,7 @@ export default function StaffLayout() {
                   {t.label}
 
                   {/* ĐƯA XUỐNG ĐÂY: Để hiển thị chuẩn trên giao diện điện thoại */}
-                  <NumberBadge n={t.badge}/>
+                  <NumberBadge n={t.badge ?? 0}/>
                 </NavLink>
               )
             })}

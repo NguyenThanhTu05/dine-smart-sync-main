@@ -1,42 +1,21 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { useAuth } from '@/contexts/AuthContext'
-import { Card } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Search, Users, Phone, MapPin, Cake, Calendar, X } from 'lucide-react'
-import { ROLE_LABEL } from '@/lib/roles'
-import { format, parseISO } from 'date-fns'
+import { DirectoryInfo as Info } from '@/components/DirectoryInfo';
+import { Avatar,AvatarFallback,AvatarImage } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import { Dialog,DialogContent,DialogHeader,DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { useDirectory,type DirectoryRow as Row } from '@/hooks/useDirectory';
+import { ROLE_LABEL } from '@/lib/roles';
+import { format,parseISO } from 'date-fns';
+import { Cake,Calendar,MapPin,Phone,Search,Users } from 'lucide-react';
+import { useState } from 'react';
 
-interface Row {
-  id: string; full_name: string; username: string; phone: string | null;
-  address: string | null; birthday: string | null; avatar_url: string | null;
-  hide_personal: boolean; role: string; hire_date: string | null;
-}
 
 export function MembersDirectoryCard() {
-  const { role: myRole } = useAuth()
-  const [rows, setRows] = useState<Row[]>([])
-  const [q, setQ] = useState('')
+  const { rows, filtered, query: q, setQuery: setQ, canSeeSensitive } = useDirectory()
   const [sel, setSel] = useState<Row | null>(null)
   const [imgOpen, setImgOpen] = useState(false)
 
-  useEffect(() => {
-    (async () => {
-      const { data: profiles } = await supabase.from('profiles').select('id,full_name,username,phone,address,birthday,avatar_url,hide_personal,hire_date').order('full_name')
-      const { data: roles } = await supabase.from('user_roles').select('user_id,role')
-      const byUid = new Map((roles ?? []).map(r => [r.user_id, r.role]))
-      setRows((profiles ?? []).map(p => ({ ...p, role: byUid.get(p.id) ?? 'staff' } as Row)))
-    })()
-  }, [])
-
-  const filtered = rows.filter(r =>
-    !q || r.full_name.toLowerCase().includes(q.toLowerCase()) || r.username.toLowerCase().includes(q.toLowerCase())
-  )
-
-  const canSee = (r: Row) => myRole === 'admin' || !r.hide_personal
 
   return (
     <Card className="space-y-3 p-4">
@@ -93,7 +72,7 @@ export function MembersDirectoryCard() {
                 </div>
               </div>
               <div className="space-y-2 rounded-lg border p-3 text-sm">
-                {canSee(sel) ? (
+                {canSeeSensitive(sel) ? (
                   <>
                     <Info icon={Phone} label="Số điện thoại" value={sel.phone || '—'} />
                     <Info icon={Cake} label="Ngày sinh" value={sel.birthday ? format(parseISO(sel.birthday), 'dd/MM/yyyy') : '—'} />
@@ -109,15 +88,5 @@ export function MembersDirectoryCard() {
         </DialogContent>
       </Dialog>
     </Card>
-  )
-}
-
-function Info({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <Icon className="h-4 w-4 text-muted-foreground" />
-      <span className="text-xs text-muted-foreground">{label}:</span>
-      <span className="ml-auto font-medium">{value}</span>
-    </div>
   )
 }

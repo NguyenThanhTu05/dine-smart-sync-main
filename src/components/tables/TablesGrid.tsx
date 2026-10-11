@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, ReactNode } from 'react'
-import { useTables, RestaurantTable, STATUS_COLOR, STATUS_LABEL, TableStatus } from '@/hooks/useTables'
 import { Badge } from '@/components/ui/badge'
-import { supabase } from '@/integrations/supabase/client'
-import { Link2 } from 'lucide-react'
-import { toast } from 'sonner'
+import { RestaurantTable,STATUS_COLOR,STATUS_LABEL,TableStatus,useTables } from '@/hooks/useTables'
+import { mergeTables,readableError } from '@/lib/restaurantTransactions'
+import { tableGroupLayout } from '@/lib/tableLayout'
 import { cn } from '@/lib/utils'
-import { getSharedBroadcastChannel } from '@/lib/tableGroup'
+import { Link2 } from 'lucide-react'
+import { ReactNode,useEffect,useMemo,useRef,useState } from 'react'
+import { toast } from 'sonner'
 
 function canMerge(a: TableStatus, b: TableStatus) {
   const ok: TableStatus[] = ['empty', 'serving']
@@ -83,54 +83,8 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
     if (s.merged_group_id && t.merged_group_id && s.merged_group_id === t.merged_group_id) {
       toast.info('Hai bàn đã cùng nhóm'); return
     }
-    let groupId = s.merged_group_id ?? t.merged_group_id ?? null
-    const displayName = `${s.name} + ${t.name}`
-    if (!groupId) {
-      const { data: g, error } = await supabase.from('table_groups')
-        .insert({ display_name: displayName, primary_table_id: s.status === 'serving' ? s.id : (t.status === 'serving' ? t.id : s.id) })
-        .select().single()
-      if (error) return toast.error(error.message)
-      groupId = g.id
-    } else {
-      await supabase.from('table_groups').update({ display_name: displayName }).eq('id', groupId)
-    }
-    const { error: e2 } = await supabase.from('restaurant_tables')
-      .update({ merged_group_id: groupId }).in('id', [s.id, t.id])
-    if (e2) return toast.error(e2.message)
-
-    const { data: groupTables } = await supabase.from('restaurant_tables')
-      .select('id').eq('merged_group_id', groupId)
-    const groupIds = (groupTables ?? []).map((r: any) => r.id)
-    const { data: openOrders } = await supabase.from('orders')
-      .select('id, created_at, notes').in('table_id', groupIds).eq('is_paid', false)
-      .order('created_at', { ascending: true })
-    if (openOrders && openOrders.length > 1) {
-      const primaryOrderId = openOrders[0].id
-      const otherIds = openOrders.slice(1).map((o: any) => o.id)
-      await supabase.from('order_items').update({ order_id: primaryOrderId }).in('order_id', otherIds)
-      await supabase.from('orders').delete().in('id', otherIds)
-    }
-   if (s.status === 'serving' || t.status === 'serving' || (openOrders && openOrders.length > 0)) {
-  await supabase.from('restaurant_tables').update({ status: 'serving' }).in('id', groupIds)
-  
-  window.dispatchEvent(new CustomEvent('table-status-changed-local', { 
-    detail: { ids: groupIds, status: 'serving' } 
-  }))
-  
-  await getSharedBroadcastChannel().send({
-    type: 'broadcast',
-    event: 'table-status-changed',
-    payload: { ids: groupIds, status: 'serving' },
-  })
-}
-
-
-    // Broadcast để B, C reload layout ngay lập tức
-    await getSharedBroadcastChannel().send({
-      type: 'broadcast',
-      event: 'table-layout-changed',
-      payload: {},
-    })
+    try { await mergeTables(sourceId, targetId) }
+    catch (error: unknown) { toast.error(readableError(error)); return }
 
     toast.success(`Đã ghép ${s.name} với ${t.name}`)
     reload()
@@ -250,7 +204,6 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
       {header}
       {areas.map(a => {
         const clusters = clustersByArea[a.id] ?? []
-        const cols = 6
         return (
           <section key={a.id}>
             <h2 className="mb-2 text-sm font-bold text-muted-foreground">{a.name}</h2>
@@ -263,24 +216,14 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
                     </div>
                   )
                 }
-                const span = Math.min(c.tables.length, cols)
+                const layout = tableGroupLayout(c.tables.length)
                 return (
                   <div
                     key={c.groupId}
-                    style={{ gridColumn: `span ${span} / span ${span}` }}
-                    className="relative overflow-hidden rounded-2xl ring-2 ring-primary/70 ring-offset-2 bg-background shadow-md"
+                    className={cn('relative min-w-0 overflow-hidden rounded-2xl ring-2 ring-primary/70 ring-offset-2 bg-background shadow-md',layout.span)}
                   >
-                    <div className="flex flex-nowrap w-full h-full">
-                      {c.tables.map((t, i) => {
-                        const isFirst = i === 0
-                        const isLast = i === c.tables.length - 1
-                        const rounded = cn(
-                          isFirst && 'rounded-l-2xl rounded-r-none',
-                          isLast && 'rounded-r-2xl rounded-l-none',
-                          !isFirst && !isLast && 'rounded-none'
-                        )
-                        return renderCell(t, { rounded, inGroup: true })
-                      })}
+                    <div className={cn('grid w-full',layout.grid)}>
+                      {c.tables.map(t => renderCell(t, { rounded: 'rounded-none', inGroup: true }))}
                     </div>
                     <div className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground shadow">
                       <Link2 className="h-3 w-3" /> {c.tables.length} bàn
@@ -294,19 +237,4 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
       })}
     </div>
   )
-}
-
-export async function unmergeGroup(groupId: string) {
-  await supabase.from('restaurant_tables').update({ merged_group_id: null }).eq('merged_group_id', groupId)
-  await supabase.from('table_groups').delete().eq('id', groupId)
-
-  // Broadcast để B, C reload layout ngay lập tức
-  await getSharedBroadcastChannel().send({
-    type: 'broadcast',
-    event: 'table-layout-changed',
-    payload: {},
-  })
-
-  toast.success('Đã tách nhóm bàn thành công')
-  window.dispatchEvent(new CustomEvent('tables-need-reload'))
 }

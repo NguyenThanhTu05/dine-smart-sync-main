@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
-import { Sparkles, Send, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { supabase } from '@/integrations/supabase/client'
+import { errorMessage } from '@/lib/errors'
+import { aiResponse } from '@/lib/functionResponses'
+import { Loader2,Send,Sparkles,X } from 'lucide-react'
+import { useEffect,useRef,useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { toast } from 'sonner'
 
@@ -14,14 +16,14 @@ const SUGGESTIONS = [
   'Nguyên liệu nào sắp hết?',
 ]
 
+const defaultMsg: Msg = { role: 'assistant', content: 'Xin chào! Mình là trợ lý AI. Bạn có thể hỏi doanh thu, quản lý menu, kiểm tra bàn, tồn kho... Cứ ra lệnh nhé 👋' }
+const STORAGE_KEY = 'ai_chat_history'
+
+
 export default function AIAssistantWidget() {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
- const [cooldown] = useState(0)
-  const defaultMsg: Msg = { role: 'assistant', content: 'Xin chào! Mình là trợ lý AI. Bạn có thể hỏi doanh thu, quản lý menu, kiểm tra bàn, tồn kho... Cứ ra lệnh nhé 👋' }
-const STORAGE_KEY = 'ai_chat_history'
-
 const [messages, setMessages] = useState<Msg[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY)
@@ -50,7 +52,7 @@ useEffect(() => {
 
   const send = async (text?: string) => {
     const content = (text ?? input).trim()
-   if (!content || loading || cooldown > 0) return 
+   if (!content || loading) return
     setInput('')
     const next = [...messages, { role: 'user' as const, content }]
     setMessages(next)
@@ -60,11 +62,12 @@ useEffect(() => {
   body: { messages: next.map(m => ({ role: m.role, content: m.content })) },
 })
       if (error) throw error
-      if ((data as any)?.error) throw new Error((data as any).error)
-      setMessages([...next, { role: 'assistant', content: (data as any)?.reply || '(không có phản hồi)' }])
-    } catch (e: any) {
-      toast.error(e.message || 'Lỗi gọi AI')
-      setMessages(m => [...m, { role: 'assistant', content: '⚠️ ' + (e.message || 'Lỗi') }])
+      const response = aiResponse.parse(data)
+      if (response.error) throw new Error(response.error)
+      setMessages([...next, { role: 'assistant', content: response.reply || '(không có phản hồi)' }])
+    } catch (e: unknown) {
+      toast.error(errorMessage(e) || 'Lỗi gọi AI')
+      setMessages(m => [...m, { role: 'assistant', content: '⚠️ ' + (errorMessage(e) || 'Lỗi') }])
     } finally {
       setLoading(false)
     }
@@ -129,16 +132,16 @@ useEffect(() => {
 
           <div className="flex gap-2 border-t p-2">
   <div className="flex flex-1 flex-col gap-1">
-    
+
     <div className="flex gap-2">
       <Input
         value={input}
         onChange={e => setInput(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter' && !cooldown) send() }}
+        onKeyDown={e => { if (e.key === 'Enter') send() }}
         placeholder="Ra lệnh cho AI..."
-        disabled={loading || cooldown > 0}
+        disabled={loading}
       />
-      <Button size="icon" onClick={() => send()} disabled={loading || !input.trim() || cooldown > 0}>
+      <Button size="icon" onClick={() => send()} disabled={loading || !input.trim()}>
         <Send className="h-4 w-4" />
       </Button>
     </div>

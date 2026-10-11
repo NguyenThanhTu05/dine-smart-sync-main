@@ -1,3 +1,11 @@
+import { loadPaidReport } from '../_shared/loadPaidReport.ts';
+import { validateArguments, parseMessages, parseAssistantResponse, type InferSchema, type ChatMessage } from '../_shared/aiProtocol.ts';
+import { paidSales } from '../_shared/paidSales.ts';
+import { createStaff } from '../_shared/createStaff.ts';
+import { requiredText, passwordInput, usernameInput, phoneInput } from '../_shared/inputValidation.ts';
+import { resolveTarget, TargetSelectionError } from '../_shared/resolveTarget.ts';
+import type { Database, Tables, TablesUpdate, Json } from "../_shared/database.types.ts";
+import { summarizePaidRevenue } from "../_shared/invoiceRevenue.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const corsHeaders = {
@@ -11,7 +19,7 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!;
 
-const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+const admin = createClient<Database>(SUPABASE_URL, SERVICE_KEY);
 
 const norm = (s: string) =>
   (s || "").toLowerCase().normalize("NFD")
@@ -232,7 +240,16 @@ const tools = [
       },
     },
   },
-];
+ ] as const;
+
+type Definition = typeof tools[number]["function"];
+type Invocation = { [D in Definition as D["name"]]: { name: D["name"]; args: InferSchema<D["parameters"]> } }[Definition["name"]];
+function invocation(name: string, value: unknown): Invocation {
+  const definition = tools.find(tool => tool.function.name === name)?.function;
+  if (!definition) throw new Error("Tool không hợp lệ");
+  validateArguments(definition.parameters, value);
+  return { name, args: value } as Invocation;
+}
 
 // ============ HELPERS ============
 function periodRange(period: string, from?: string, to?: string) {
@@ -258,96 +275,90 @@ function periodRange(period: string, from?: string, to?: string) {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
-async function findRow(table: string, match: string, fields = "*") {
-  const byId = await admin.from(table).select(fields).eq("id", match).maybeSingle();
-  if (byId.data) return byId.data as any;
-  const all = await admin.from(table).select(fields);
-  const q = norm(match);
-  return ((all.data ?? []) as any[]).find((x: any) => norm(x.name).includes(q));
+type NamedTable = 'areas' | 'categories' | 'restaurant_tables' | 'menu_items' | 'ingredients';
+async function targetRows<T extends NamedTable>(db: ReturnType<typeof createClient<Database>>, table: T): Promise<Tables<T>[]> {
+  const rows: Tables<T>[] = [];
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await db.from(table).select('*').order('id').range(offset, offset + 999);
+    if (error) throw error;
+    rows.push(...((data ?? []) as unknown as Tables<T>[]));
+    if ((data?.length ?? 0) < 1000) return rows;
+  }
+}
+async function findRow<T extends NamedTable>(db: ReturnType<typeof createClient<Database>>, table: T, match: string) {
+  return resolveTarget(await targetRows(db, table), match, row => [row.name]);
+}
+async function findProfile(db: ReturnType<typeof createClient<Database>>, match: string) {
+  const rows = [];
+  for (let offset = 0; ; offset += 1000) {
+    const {data,error} = await db.from('profiles').select('id,username,full_name,phone,address,birthday,hire_date,avatar_url,hide_personal').order('id').range(offset,offset+999);
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if ((data?.length ?? 0)<1000) break;
+  }
+  return resolveTarget(rows, match, row => [row.full_name ?? '', row.username ?? '']);
 }
 
-async function findProfile(match: string) {
-  const byId = await admin.from("profiles").select("*").eq("id", match).maybeSingle();
-  if (byId.data) return byId.data;
-  const all = await admin.from("profiles").select("*");
-  const q = norm(match);
-  return (all.data ?? []).find((p: any) =>
-    norm(p.full_name || "").includes(q) || norm(p.username || "").includes(q)
+async function getCategoryId(db: ReturnType<typeof createClient<Database>>, category: string): Promise<string | null> {
+  const rows = await targetRows(db, "categories");
+  let target;
+  try { target = resolveTarget(rows, category, row => [row.name]); }
+  catch (error) {
+    if (!(error instanceof TargetSelectionError) || error.candidates.length) throw error;
+    const { data, error: insertError } = await db.from("categories").insert({ name: requiredText(category, "Danh mục") }).select("id").single();
+    if (insertError) throw insertError;
+    return data.id;
+  }
+  return target.id;
+}
+
+async function paidReport(db: ReturnType<typeof createClient<Database>>,start:string,end:string) {
+  return await loadPaidReport(
+    (offset,last) => db.from('orders').select('id,total,paid_at,payment_snapshot')
+      .eq('is_paid',true).gte('paid_at',start).lt('paid_at',end).order('id').range(offset,last),
+    (ids,offset,last) => db.from('order_items').select('order_id,menu_item_id,name_snapshot,quantity')
+      .in('order_id',ids).order('id').range(offset,last),
   );
 }
 
-async function getCategoryId(category: string): Promise<string | null> {
-  const byId = await admin.from("categories").select("id").eq("id", category).maybeSingle();
-  if (byId.data) return byId.data.id;
-  const byName = await admin.from("categories").select("id").ilike("name", category).maybeSingle();
-  if (byName.data) return byName.data.id;
-  const { data: max } = await admin.from("categories").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
-  const ins = await admin.from("categories").insert({ name: category, sort_order: (max?.sort_order ?? 0) + 1 }).select("id").single();
-  return ins.data?.id ?? null;
-}
-
-// Tính doanh thu thực giống AdminDashboard.tsx: VAT + service + discount
-async function calcFinalRevenue(orders: any[]): Promise<number> {
-  const { data: ps } = await admin.from("payment_settings")
-    .select("vat_percent, service_percent, global_discount_percent")
-    .eq("id", 1).maybeSingle();
-  const vatPct = ps?.vat_percent ?? 0;
-  const svcPct = ps?.service_percent ?? 0;
-  const globalDiscPct = ps?.global_discount_percent ?? 0;
-
-  return orders.reduce((sum, o) => {
-    const subtotal = Number(o.total ?? 0);
-    const afterSvc = subtotal + Math.round(subtotal * svcPct / 100);
-    const afterVat = afterSvc + Math.round(afterSvc * vatPct / 100);
-    const effectivePct = Number(o.discount_percent ?? 0) > 0 ? Number(o.discount_percent) : globalDiscPct;
-    return sum + afterVat - Math.round(afterVat * effectivePct / 100);
-  }, 0);
-}
-
 // ============ TOOL HANDLERS ============
-async function runTool(name: string, args: any): Promise<any> {
-  switch (name) {
+async function runTool(call: Invocation, db: ReturnType<typeof createClient<Database>>): Promise<unknown> {
+  switch (call.name) {
 
     // ===== Analytics =====
     case "get_revenue": {
+      const args = call.args;
       const { start, end } = periodRange(args.period, args.from, args.to);
       // FIX: lấy thêm discount_percent để tính đúng như Dashboard
-      const { data, error } = await admin.from("orders")
-        .select("total, paid_at, discount_percent")
-        .eq("is_paid", true)
-        .gte("paid_at", start).lt("paid_at", end);
-      if (error) return { error: error.message };
-      const paidOrders = data ?? [];
-      const total_revenue = await calcFinalRevenue(paidOrders);
-      return { period: args.period, from: start, to: end, order_count: paidOrders.length, total_revenue };
+      const paidOrders = await paidReport(db,start,end);
+      return { period: args.period, from: start, to: end, order_count: paidOrders.length, ...summarizePaidRevenue(paidOrders) };
     }
 
     case "top_selling_items": {
+      const args = call.args;
       const days = args.days ?? 7;
+      if (!Number.isInteger(days) || days<1 || days>3660) return { error: "Khoảng ngày không hợp lệ" };
       const since = new Date(Date.now() - days * 86400_000).toISOString();
-      const { data, error } = await admin.from("order_items")
-        .select("name_snapshot,quantity,created_at").gte("created_at", since);
-      if (error) return { error: error.message };
-      const map = new Map<string, number>();
-      for (const it of (data ?? [])) map.set(it.name_snapshot, (map.get(it.name_snapshot) ?? 0) + Number(it.quantity));
-      const sorted = [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, args.limit ?? 10);
-      return { days, top: sorted.map(([name, qty]) => ({ name, qty })) };
+      const orders = await paidReport(db,since,new Date().toISOString());
+      const sorted = paidSales(orders).slice(0, Math.min(100,Math.max(1,args.limit ?? 10)));
+      return { days, top: sorted, note: "Chỉ tính đơn đã thanh toán theo paid_at; không tự tính lại số tiền hóa đơn cũ." };
     }
 
     case "list_bills": {
+      const args = call.args;
       const { start, end } = periodRange(args.period ?? "today", args.from, args.to);
-      const { data, error } = await admin.from("orders")
-        .select("id,total,paid_at,payment_method,table_id,discount_percent")
+      const { data, error } = await db.from("orders")
+        .select("id,total,paid_at,payment_method,table_id,discount_percent,payment_snapshot")
         .eq("is_paid", true).gte("paid_at", start).lt("paid_at", end)
         .order("paid_at", { ascending: false }).limit(args.limit ?? 50);
       if (error) return { error: error.message };
-      return { from: start, to: end, count: data?.length ?? 0, bills: data };
+      return { from: start, to: end, count: data?.length ?? 0, bills: data, ...summarizePaidRevenue(data ?? []), note: "total lưu tạm tính gốc; số đã thu lấy từ payment_snapshot.total, thiếu snapshot thì cần đối soát." };
     }
 
     // ===== Tables / Areas =====
     case "list_tables_status": {
       // FIX: thêm merged_group_id để biết bàn nào đang ghép
-      const { data, error } = await admin.from("restaurant_tables")
+      const { data, error } = await db.from("restaurant_tables")
         .select("name,status,seats,area_id,merged_group_id,sort_order")
         .order("sort_order");
       if (error) return { error: error.message };
@@ -355,40 +366,44 @@ async function runTool(name: string, args: any): Promise<any> {
     }
 
     case "list_areas": {
-      const { data, error } = await admin.from("areas").select("id,name,sort_order").order("sort_order");
+      const { data, error } = await db.from("areas").select("id,name,sort_order").order("sort_order");
       if (error) return { error: error.message };
       return { areas: data };
     }
 
     case "add_area": {
-      const { data: max } = await admin.from("areas").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
-      const { data, error } = await admin.from("areas").insert({ name: args.name, sort_order: (max?.sort_order ?? 0) + 1 }).select().single();
+      const args = call.args;
+      const { data: max } = await db.from("areas").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
+      const { data, error } = await db.from("areas").insert({ name: args.name, sort_order: (max?.sort_order ?? 0) + 1 }).select().single();
       if (error) return { error: error.message };
       return { ok: true, area: data };
     }
 
     case "update_area": {
-      const a = await findRow("areas", args.match);
+      const args = call.args;
+      const a = await findRow(db, "areas", args.match);
       if (!a) return { error: "Không tìm thấy khu vực" };
-      const { data, error } = await admin.from("areas").update({ name: args.new_name }).eq("id", a.id).select().single();
+      const { data, error } = await db.from("areas").update({ name: args.new_name }).eq("id", a.id).select().single();
       if (error) return { error: error.message };
       return { ok: true, area: data };
     }
 
    case "delete_area": {
-      const a = await findRow("areas", args.match);
+      const args = call.args;
+      const a = await findRow(db, "areas", args.match);
       if (!a) return { error: "Không tìm thấy khu vực" };
       if (!args.confirmed) return { needs_confirmation: true, message: `Bạn có chắc muốn xóa khu vực "${a.name}"? Xác nhận để tiếp tục.` };
-      const { error } = await admin.from("areas").delete().eq("id", a.id);
+      const { error } = await db.from("areas").delete().eq("id", a.id);
       if (error) return { error: error.message };
       return { ok: true, deleted: a.name };
     }
 
     case "add_table": {
+      const args = call.args;
       let area_id: string | null = null;
-      if (args.area) { const a = await findRow("areas", args.area); area_id = a?.id ?? null; }
-      const { data: max } = await admin.from("restaurant_tables").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
-      const { data, error } = await admin.from("restaurant_tables")
+      if (args.area) { const a = await findRow(db, "areas", args.area); area_id = a?.id ?? null; }
+      const { data: max } = await db.from("restaurant_tables").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
+      const { data, error } = await db.from("restaurant_tables")
         .insert({ name: args.name, area_id, seats: args.seats ?? 4, sort_order: (max?.sort_order ?? 0) + 1 })
         .select().single();
       if (error) return { error: error.message };
@@ -396,77 +411,84 @@ async function runTool(name: string, args: any): Promise<any> {
     }
 
     case "update_table": {
-      const t = await findRow("restaurant_tables", args.match);
+      const args = call.args;
+      const t = await findRow(db, "restaurant_tables", args.match);
       if (!t) return { error: "Không tìm thấy bàn" };
-      const upd: any = {};
+      const upd: Record<string, Json | undefined> = {};
       if (args.new_name !== undefined) upd.name = args.new_name;
       if (args.seats !== undefined) upd.seats = args.seats;
       if (args.status !== undefined) upd.status = args.status;
-      const { data, error } = await admin.from("restaurant_tables").update(upd).eq("id", t.id).select().single();
+      const { data, error } = await db.rpc("restaurant_edit_table", { p_table: t.id, p_patch: upd });
       if (error) return { error: error.message };
       return { ok: true, table: data };
     }
 
  case "delete_table": {
-      const t = await findRow("restaurant_tables", args.match);
+      const args = call.args;
+      const t = await findRow(db, "restaurant_tables", args.match);
       if (!t) return { error: "Không tìm thấy bàn" };
       if (!args.confirmed) return { needs_confirmation: true, message: `Bạn có chắc muốn xóa bàn "${t.name}"? Xác nhận để tiếp tục.` };
-      const { error } = await admin.from("restaurant_tables").delete().eq("id", t.id);
+      const { error } = await db.from("restaurant_tables").delete().eq("id", t.id);
       if (error) return { error: error.message };
       return { ok: true, deleted: t.name };
     }
 
     // ===== Menu =====
     case "list_menu": {
+      const args = call.args;
       // FIX: thêm no_cook, recipe vào select
-      const { data, error } = await admin.from("menu_items")
+      const { data, error } = await db.from("menu_items")
         .select("id,name,price,is_available,category_id,no_cook,recipe").order("name");
       if (error) return { error: error.message };
       const s = norm(args.search || "");
-      const items = s ? (data ?? []).filter((x: any) => norm(x.name).includes(s)) : data;
+      const items = s ? (data ?? []).filter((x) => norm(x.name).includes(s)) : data;
       return { items };
     }
 
     case "list_categories": {
-      const { data, error } = await admin.from("categories").select("id,name,sort_order").order("sort_order");
+      const { data, error } = await db.from("categories").select("id,name,sort_order").order("sort_order");
       if (error) return { error: error.message };
       return { categories: data };
     }
 
     case "add_category": {
-      const { data: existing } = await admin.from("categories").select("*").ilike("name", args.name).maybeSingle();
+      const args = call.args;
+      const { data: existing } = await db.from("categories").select("*").ilike("name", args.name).maybeSingle();
       if (existing) return { ok: true, note: "Đã tồn tại", category: existing };
-      const { data: max } = await admin.from("categories").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
-      const { data, error } = await admin.from("categories").insert({ name: args.name, sort_order: (max?.sort_order ?? 0) + 1 }).select().single();
+      const { data: max } = await db.from("categories").select("sort_order").order("sort_order", { ascending: false }).limit(1).maybeSingle();
+      const { data, error } = await db.from("categories").insert({ name: args.name, sort_order: (max?.sort_order ?? 0) + 1 }).select().single();
       if (error) return { error: error.message };
       return { ok: true, category: data };
     }
 case "delete_category": {
-      const c = await findRow("categories", args.match);
+      const args = call.args;
+      const c = await findRow(db, "categories", args.match);
       if (!c) return { error: "Không tìm thấy danh mục" };
       if (!args.confirmed) return { needs_confirmation: true, message: `Bạn có chắc muốn xóa danh mục "${c.name}"? Xác nhận để tiếp tục.` };
-      const { error } = await admin.from("categories").delete().eq("id", c.id);
+      const { error } = await db.from("categories").delete().eq("id", c.id);
       if (error) return { error: error.message };
       return { ok: true, deleted: c.name };
     }
 
     case "add_menu_item": {
-      const category_id = args.category ? await getCategoryId(args.category) : null;
+      const args = call.args;
+      const category_id = args.category ? await getCategoryId(db, args.category) : null;
       // FIX: thêm no_cook và recipe
-      const { data, error } = await admin.from("menu_items").insert({
+      const { data, error } = await db.rpc("restaurant_menu", { p_id: null, p_data: {
         name: args.name, price: args.price, category_id,
         is_available: args.is_available ?? true,
         no_cook: args.no_cook ?? false,
         recipe: args.recipe ?? null,
-      }).select().single();
+      } });
       if (error) return { error: error.message };
       return { ok: true, item: data };
     }
 
     case "update_menu_item": {
-      const item = await findRow("menu_items", args.match);
+      const args = call.args;
+      const item = await findRow(db, "menu_items", args.match);
       if (!item) return { error: `Không tìm thấy món "${args.match}"` };
-      const upd: any = {};
+      const upd: Record<string, Json | undefined> = {};
       if (args.new_name !== undefined) upd.name = args.new_name;
       if (args.new_price !== undefined) upd.price = args.new_price;
       if (args.is_available !== undefined) upd.is_available = args.is_available;
@@ -474,102 +496,109 @@ case "delete_category": {
       if (args.no_cook !== undefined) upd.no_cook = args.no_cook;
       if (args.recipe !== undefined) upd.recipe = args.recipe;
       if (Object.keys(upd).length === 0) return { error: "Không có gì để sửa" };
-      const { data, error } = await admin.from("menu_items").update(upd).eq("id", item.id).select().single();
+      const { data, error } = await db.rpc("restaurant_menu", { p_id: item.id, p_data: upd, p_expected: item });
       if (error) return { error: error.message };
       return { ok: true, item: data };
     }
 
 case "delete_menu_item": {
-      const item = await findRow("menu_items", args.match);
+      const args = call.args;
+      const item = await findRow(db, "menu_items", args.match);
       if (!item) return { error: `Không tìm thấy món "${args.match}"` };
       if (!args.confirmed) return { needs_confirmation: true, message: `Bạn có chắc muốn xóa món "${item.name}"? Xác nhận để tiếp tục.` };
-      const { error } = await admin.from("menu_items").delete().eq("id", item.id);
+      const { error } = await db.from("menu_items").delete().eq("id", item.id);
       if (error) return { error: error.message };
       return { ok: true, deleted: item.name };
     }
 
     // ===== Ingredients =====
     case "list_ingredients": {
-      const { data, error } = await admin.from("ingredients").select("id,name,unit,stock,min_stock").order("name");
+      const args = call.args;
+      const { data, error } = await db.from("ingredients").select("id,name,unit,stock,min_stock").order("name");
       if (error) return { error: error.message };
       const s = norm(args.search || "");
-      const items = s ? (data ?? []).filter((x: any) => norm(x.name).includes(s)) : data;
+      const items = s ? (data ?? []).filter((x) => norm(x.name).includes(s)) : data;
       return { ingredients: items };
     }
 
     case "list_low_stock": {
-      const { data, error } = await admin.from("ingredients").select("name,unit,stock,min_stock");
+      const { data, error } = await db.from("ingredients").select("name,unit,stock,min_stock");
       if (error) return { error: error.message };
       // FIX: dùng < thay vì <= để khớp với Dashboard và MenuAndInventory
-      return { low_stock: (data ?? []).filter((x: any) => Number(x.stock) < Number(x.min_stock)) };
+      return { low_stock: (data ?? []).filter((x) => Number(x.stock) < Number(x.min_stock)) };
     }
 
     case "add_ingredient": {
-      const { data, error } = await admin.from("ingredients")
-        .insert({ name: args.name, unit: args.unit ?? "g", stock: args.stock ?? 0, min_stock: args.min_stock ?? 0 })
-        .select().single();
+      const args = call.args;
+      const { data, error } = await db.rpc("restaurant_stock", { p_action: "create", p_id: null, p_request: crypto.randomUUID(),
+        p_data: { name: args.name, unit: args.unit ?? "g", stock: args.stock ?? 0, min_stock: args.min_stock ?? 0 } });
       if (error) return { error: error.message };
       return { ok: true, ingredient: data };
     }
 
     case "update_ingredient": {
-      const ing = await findRow("ingredients", args.match);
+      const args = call.args;
+      const ing = await findRow(db, "ingredients", args.match);
       if (!ing) return { error: "Không tìm thấy nguyên liệu" };
-      const upd: any = {};
+      const upd = { name: ing.name, unit: ing.unit, stock: ing.stock, min_stock: ing.min_stock, expected_stock: ing.stock, expected: ing };
       if (args.new_name !== undefined) upd.name = args.new_name;
       if (args.unit !== undefined) upd.unit = args.unit;
       if (args.min_stock !== undefined) upd.min_stock = args.min_stock;
       if (args.set_stock !== undefined) upd.stock = args.set_stock;
-      const { data, error } = await admin.from("ingredients").update(upd).eq("id", ing.id).select().single();
+      const { data, error } = await db.rpc("restaurant_stock", { p_action: "edit", p_id: ing.id, p_data: upd, p_request: crypto.randomUUID() });
       if (error) return { error: error.message };
       return { ok: true, ingredient: data };
     }
 
     case "adjust_stock": {
-      const ing = await findRow("ingredients", args.match);
+      const args = call.args;
+      const ing = await findRow(db, "ingredients", args.match);
       if (!ing) return { error: "Không tìm thấy nguyên liệu" };
-      const newStock = Math.max(0, Number(ing.stock) + Number(args.delta));
-      const { error: e1 } = await admin.from("ingredients").update({ stock: newStock }).eq("id", ing.id);
-      if (e1) return { error: e1.message };
-      await admin.from("stock_movements").insert({ ingredient_id: ing.id, delta: args.delta, reason: args.reason ?? "AI assistant" });
-      return { ok: true, ingredient: ing.name, new_stock: newStock };
+      const { data, error } = await db.rpc("restaurant_stock", { p_action: "adjust", p_id: ing.id, p_request: crypto.randomUUID(), p_data: { delta: args.delta, reason: args.reason ?? "AI assistant" } });
+      if (error) return { error: error.message };
+      return { ok: true, ingredient: data };
     }
 case "delete_ingredient": {
-      const ing = await findRow("ingredients", args.match);
+      const args = call.args;
+      const ing = await findRow(db, "ingredients", args.match);
       if (!ing) return { error: "Không tìm thấy nguyên liệu" };
       if (!args.confirmed) return { needs_confirmation: true, message: `Bạn có chắc muốn xóa nguyên liệu "${ing.name}"? Xác nhận để tiếp tục.` };
-      const { error } = await admin.from("ingredients").delete().eq("id", ing.id);
+      const { error } = await db.rpc("restaurant_stock", { p_action: "delete", p_id: ing.id, p_data: {}, p_request: crypto.randomUUID() });
       if (error) return { error: error.message };
       return { ok: true, deleted: ing.name };
     }
 
     case "set_recipe": {
-      const item = await findRow("menu_items", args.menu_item);
+      const args = call.args;
+      const item = await findRow(db, "menu_items", args.menu_item);
       if (!item) return { error: "Không tìm thấy món" };
-      await admin.from("recipes").delete().eq("menu_item_id", item.id);
-      const rows: any[] = [];
+      const { data: previous, error: readError } = await db.from("recipes").select("ingredient_id,quantity").eq("menu_item_id", item.id).order("ingredient_id");
+      if (readError) return { error: readError.message };
+      const rows: { ingredient_id: string; quantity: number }[] = [];
       for (const r of (args.items ?? [])) {
-        const ing = await findRow("ingredients", r.ingredient);
+        const ing = await findRow(db, "ingredients", r.ingredient);
         if (!ing) return { error: `Không tìm thấy nguyên liệu: ${r.ingredient}` };
-        rows.push({ menu_item_id: item.id, ingredient_id: ing.id, quantity: r.quantity });
+        rows.push({ ingredient_id: ing.id, quantity: r.quantity });
       }
-      if (rows.length) { const { error } = await admin.from("recipes").insert(rows); if (error) return { error: error.message }; }
+      const { error } = await db.rpc("restaurant_recipe", { p_action: "replace", p_menu: item.id, p_rows: rows, p_expected: previous ?? [] });
+      if (error) return { error: error.message };
       return { ok: true, menu_item: item.name, count: rows.length };
     }
 
     case "get_recipe": {
-      const item = await findRow("menu_items", args.menu_item);
+      const args = call.args;
+      const item = await findRow(db, "menu_items", args.menu_item);
       if (!item) return { error: "Không tìm thấy món" };
-      const { data: rec } = await admin.from("recipes").select("ingredient_id,quantity").eq("menu_item_id", item.id);
-      const ingIds = (rec ?? []).map((r: any) => r.ingredient_id);
-      const { data: ings } = await admin.from("ingredients").select("id,name,unit")
+      const { data: rec } = await db.from("recipes").select("ingredient_id,quantity").eq("menu_item_id", item.id);
+      const ingIds = (rec ?? []).map((r) => r.ingredient_id);
+      const { data: ings } = await db.from("ingredients").select("id,name,unit")
         .in("id", ingIds.length ? ingIds : ["00000000-0000-0000-0000-000000000000"]);
-      const map = new Map((ings ?? []).map((i: any) => [i.id, i]));
+      const map = new Map((ings ?? []).map((i) => [i.id, i]));
       return {
         menu_item: item.name,
-        recipe: (rec ?? []).map((r: any) => ({
-          ingredient: (map.get(r.ingredient_id) as any)?.name,
-          unit: (map.get(r.ingredient_id) as any)?.unit,
+        recipe: (rec ?? []).map((r) => ({
+          ingredient: map.get(r.ingredient_id ?? "")?.name,
+          unit: map.get(r.ingredient_id ?? "")?.unit,
           quantity: r.quantity,
         })),
       };
@@ -577,66 +606,66 @@ case "delete_ingredient": {
 
     // ===== Payment settings =====
     case "get_payment_settings": {
-      const { data, error } = await admin.from("payment_settings").select("*").eq("id", 1).maybeSingle();
+      const { data, error } = await db.from("payment_settings").select("*").eq("id", 1).maybeSingle();
       if (error) return { error: error.message };
       return { settings: data };
     }
 
     case "update_payment_settings": {
+      const args = call.args;
       // FIX: thêm global_discount_percent
       const fields = [
         "shop_name", "address", "phone", "tax_code", "slogan",
         "bank_name", "account_holder", "account_number",
         "vat_percent", "service_percent", "global_discount_percent",
         "footer_note", "policy_note",
-      ];
-      const upd: any = { id: 1, updated_at: new Date().toISOString() };
-      for (const f of fields) if (args[f] !== undefined) upd[f] = args[f];
-      const { data, error } = await admin.from("payment_settings").upsert(upd).select().single();
+      ] as const;
+      const upd: TablesUpdate<"payment_settings"> = { updated_at: new Date().toISOString() };
+      for (const f of fields) if (args[f] !== undefined) Object.assign(upd, { [f]: args[f] });
+      const { data, error } = await db.from("payment_settings").update(upd).eq("id", 1).select().single();
       if (error) return { error: error.message };
       return { ok: true, settings: data };
     }
 
     // ===== Staff =====
     case "list_staff": {
-      const { data: profiles } = await admin.from("profiles").select("id,username,full_name,phone");
-      const { data: roles } = await admin.from("user_roles").select("user_id,role");
-      const map = new Map((roles ?? []).map((r: any) => [r.user_id, r.role]));
-      return { staff: (profiles ?? []).map((p: any) => ({ ...p, role: map.get(p.id) ?? null })) };
+      const { data: profiles } = await db.from("profiles").select("id,username,full_name,phone");
+      const { data: roles } = await db.from("user_roles").select("user_id,role");
+      const map = new Map((roles ?? []).map((r) => [r.user_id, r.role]));
+      return { staff: (profiles ?? []).map((p) => ({ ...p, role: map.get(p.id) ?? null })) };
     }
 
     case "create_staff": {
-      const { data: created, error: e1 } = await admin.auth.admin.createUser({
-        email: args.email, password: args.password, email_confirm: true,
-        user_metadata: { full_name: args.full_name ?? args.username ?? args.email },
-      });
-      if (e1) return { error: e1.message };
-      const uid = created.user!.id;
-      await admin.from("profiles").upsert({
-        id: uid, username: args.username ?? args.email.split("@")[0],
-        full_name: args.full_name ?? args.username ?? args.email,
-        phone: args.phone ?? null, visible_password: args.password,
-      });
-      await admin.from("user_roles").upsert({ user_id: uid, role: args.role });
+      const args = call.args;
+      args.password = passwordInput(args.password);
+      args.username = usernameInput(args.username ?? args.email?.split('@')[0]);
+      args.full_name = requiredText(args.full_name ?? args.username, 'Họ tên');
+      args.phone = phoneInput(args.phone);
+      if (typeof args.email !== 'string' || args.email.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(args.email)) return { error: 'Email không hợp lệ' };
+      if (!["staff","cashier","kitchen"].includes(args.role)) return { error: "Vai trò không hợp lệ" };
+      const uid = await createStaff(
+        () => admin.auth.admin.createUser({ email: args.email, password: args.password, email_confirm: true, user_metadata: { full_name: args.full_name ?? args.username ?? args.email } }),
+        id => db.rpc('restaurant_staff', { p_user: id, p_profile: { username: args.username ?? args.email.split('@')[0], full_name: args.full_name ?? args.username ?? args.email, phone: args.phone ?? null }, p_role: args.role, p_initialize: true }),
+        id => admin.auth.admin.deleteUser(id),
+      );
       return { ok: true, user_id: uid, email: args.email, role: args.role };
     }
 
     case "update_staff": {
-      const p = await findProfile(args.match);
+      const args = call.args;
+      const p = await findProfile(db, args.match);
       if (!p) return { error: "Không tìm thấy nhân viên" };
-      const upd: any = {};
+      const upd: Record<string, Json | undefined> = {};
       if (args.full_name !== undefined) upd.full_name = args.full_name;
       if (args.phone !== undefined) upd.phone = args.phone;
-      if (Object.keys(upd).length) await admin.from("profiles").update(upd).eq("id", p.id);
-      if (args.role !== undefined) {
-        await admin.from("user_roles").delete().eq("user_id", p.id);
-        await admin.from("user_roles").insert({ user_id: p.id, role: args.role });
-      }
+      const { error } = await db.rpc('restaurant_staff', { p_user: p.id, p_profile: upd, p_role: args.role ?? null });
+      if (error) return { error: error.message };
       return { ok: true, staff: p.full_name };
     }
 
 case "delete_staff": {
-      const p = await findProfile(args.match);
+      const args = call.args;
+      const p = await findProfile(db, args.match);
       if (!p) return { error: "Không tìm thấy nhân viên" };
       if (!args.confirmed) return { needs_confirmation: true, message: `Bạn có chắc muốn xóa nhân viên "${p.full_name}"? Xác nhận để tiếp tục.` };
       const { error } = await admin.auth.admin.deleteUser(p.id);
@@ -646,47 +675,49 @@ case "delete_staff": {
 
     // ===== Attendance =====
     case "get_attendance_settings": {
-      const { data, error } = await admin.from("attendance_settings").select("*").eq("id", 1).maybeSingle();
+      const { data, error } = await db.from("attendance_settings").select("*").eq("id", 1).maybeSingle();
       if (error) return { error: error.message };
       return { settings: data };
     }
 
     case "update_attendance_settings": {
-      const upd: any = { id: 1, updated_at: new Date().toISOString() };
+      const args = call.args;
+      const upd: TablesUpdate<"attendance_settings"> = { updated_at: new Date().toISOString() };
       if (args.latitude !== undefined) upd.latitude = args.latitude;
       if (args.longitude !== undefined) upd.longitude = args.longitude;
       if (args.radius_m !== undefined) upd.radius_m = args.radius_m;
-      const { data, error } = await admin.from("attendance_settings").upsert(upd).select().single();
+      const { data, error } = await db.from("attendance_settings").update(upd).eq("id", 1).select().single();
       if (error) return { error: error.message };
       return { ok: true, settings: data };
     }
 
     case "list_attendance": {
+      const args = call.args;
       const { start, end } = periodRange(args.period ?? "today", args.from, args.to);
       let userId: string | null = null;
       if (args.staff) {
-        const p = await findProfile(args.staff);
+        const p = await findProfile(db, args.staff);
         if (!p) return { error: "Không tìm thấy nhân viên" };
         userId = p.id;
       }
-      let q = admin.from("attendance_logs")
+      let q = db.from("attendance_logs")
         .select("user_id,kind,at,distance_m")
         .gte("at", start).lt("at", end)
         .order("at", { ascending: false }).limit(args.limit ?? 100);
       if (userId) q = q.eq("user_id", userId);
       const { data, error } = await q;
       if (error) return { error: error.message };
-      const ids = [...new Set((data ?? []).map((l: any) => l.user_id))];
-      const { data: profs } = await admin.from("profiles").select("id,full_name")
+      const ids = [...new Set((data ?? []).map((l) => l.user_id))];
+      const { data: profs } = await db.from("profiles").select("id,full_name")
         .in("id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]);
-      const map = new Map((profs ?? []).map((p: any) => [p.id, p.full_name]));
+      const map = new Map((profs ?? []).map((p) => [p.id, p.full_name]));
       return {
         from: start, to: end, count: data?.length ?? 0,
-        logs: (data ?? []).map((l: any) => ({ ...l, staff: map.get(l.user_id) })),
+        logs: (data ?? []).map((l) => ({ ...l, staff: map.get(l.user_id) })),
       };
     }
   }
-  return { error: "Unknown tool: " + name };
+  return { error: "Unknown tool" };
 }
 
 // ============ MAIN ============
@@ -697,21 +728,22 @@ Deno.serve(async (req) => {
     if (!authHeader.startsWith("Bearer "))
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    const userClient = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
+    const userClient = createClient<Database>(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
     const { data: userRes } = await userClient.auth.getUser();
     const userId = userRes?.user?.id;
     if (!userId)
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    const { data: roleRow } = await admin.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle();
+    const { data: roleRow } = await userClient.from("user_roles").select("role").eq("user_id", userId).eq("role", "admin").maybeSingle();
     if (!roleRow)
       return new Response(JSON.stringify({ error: "Chỉ admin được phép dùng AI assistant" }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    const { messages } = await req.json();
+    const messages = parseMessages(await req.json());
 
     const systemPrompt = `Bạn là trợ lý AI quản lý nhà hàng. Trả lời tiếng Việt, ngắn gọn, lịch sự.
 
 QUAN TRỌNG: Bạn PHẢI gọi tool khi user hỏi về dữ liệu hoặc yêu cầu thao tác. KHÔNG được tự đoán hay trả lời từ bộ nhớ.
+- Nếu total_revenue là null, giải thích hóa đơn cũ thiếu dữ liệu chốt; không tự ước tính tổng doanh thu.
 - Hỏi doanh thu → gọi get_revenue hoặc list_bills. Khi trả lời dùng từ "hóa đơn" thay vì "đơn hàng".
 - Hỏi bàn/khu vực → gọi list_tables_status hoặc list_areas
 - Hỏi menu/danh mục → gọi list_menu
@@ -733,7 +765,7 @@ Với thao tác có hậu quả khác không phải xóa (đổi giá, đổi ro
 Format số tiền VN (1.250.000 đ). Dùng bảng/bullet markdown khi liệt kê.
 Lưu ý từ ngữ: dùng "hóa đơn" (không dùng "đơn hàng"), "bàn" (không dùng "bàn ăn"), "nguyên liệu" (không dùng "vật liệu").`;
 
-    const convo: any[] = [{ role: "system", content: systemPrompt }, ...messages];
+    const convo: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...messages];
 
     for (let i = 0; i < 10; i++) {
       const resp = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
@@ -761,7 +793,7 @@ Lưu ý từ ngữ: dùng "hóa đơn" (không dùng "đơn hàng"), "bàn" (kh�
       }
 
       const data = await resp.json();
-      const msg = data.choices?.[0]?.message;
+      const msg = parseAssistantResponse(data);
       if (!msg) return new Response(JSON.stringify({ error: "No response" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
       console.log("Gemini msg:", JSON.stringify({ content: msg.content, tool_calls_count: msg.tool_calls?.length ?? 0 }));
@@ -778,9 +810,15 @@ const calls = msg.tool_calls;
       }
 
       for (const c of calls) {
-        let a: any = {};
-        try { a = JSON.parse(c.function.arguments || "{}"); } catch {}
-        const result = await runTool(c.function.name, a);
+        let result;
+        try { result = await runTool(invocation(c.function.name, JSON.parse(c.function.arguments)), userClient); }
+        catch (error) {
+          if (error instanceof TargetSelectionError) {
+            // Stop this request: the model must not choose a candidate itself.
+            return new Response(JSON.stringify({ reply: error.message }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+          result = { error: error instanceof Error ? error.message : "Thao tác thất bại" };
+        }
         convo.push({ role: "tool", tool_call_id: c.id, content: JSON.stringify(result) });
       }
     }

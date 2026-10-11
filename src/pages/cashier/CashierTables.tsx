@@ -1,21 +1,23 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useTables, RestaurantTable, STATUS_LABEL } from '@/hooks/useTables'
-import { useAuth } from '@/contexts/AuthContext'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { OrderPanel,PayPanel,ServedPanel } from '@/components/tables/TablePanels'
+import { TablesGrid } from '@/components/tables/TablesGrid'
 import { Badge } from '@/components/ui/badge'
-import { supabase } from '@/integrations/supabase/client'
-import { formatVND } from '@/hooks/useGlobalCounts'
-import { Receipt, CheckCircle2, Unlink, Plus, BellRing, CreditCard, ChevronLeft } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Dialog,DialogContent,DialogHeader,DialogTitle } from '@/components/ui/dialog'
+import { useOrderSync } from '@/hooks/useOrderSync'
+import { RestaurantTable,STATUS_LABEL,useTables } from '@/hooks/useTables'
+import type { Order } from '@/lib/domainTypes'
+import { formatVND } from '@/lib/formatVND'
+import { readOpenOrder } from '@/lib/openOrder'
+import { payOrder,quoteOrder,readableError,releaseTables,type PaymentQuote } from '@/lib/restaurantTransactions'
+import { unmergeGroup } from '@/lib/tableGroupActions'
+import { BellRing,CheckCircle2,ChevronLeft,CreditCard,Plus,Unlink } from 'lucide-react'
+import { useEffect,useState } from 'react'
 import { toast } from 'sonner'
-import { OrderPanel, ServedPanel, PayPanel } from '@/components/tables/TablePanels'
-import { findGroupOpenOrderId, updateGroupStatus } from '@/lib/tableGroup'
-import { TablesGrid, unmergeGroup } from '@/components/tables/TablesGrid'
-import { printBill } from '@/lib/printBill'
 
 export default function CashierTables() {
-  const { tables, reload } = useTables()
-  const [sel, setSel] = useState<RestaurantTable | null>(null)
+  const { tables, reload, loading, error } = useTables()
+  const [selection, setSel] = useState<RestaurantTable | null>(null)
+  const sel = selection && !loading && !error ? tables.find(t => t.id === selection.id) ?? null : selection
 
   const peers = sel?.merged_group_id
     ? tables.filter(x => x.merged_group_id === sel.merged_group_id && x.id !== sel.id)
@@ -55,8 +57,8 @@ function CashierTableDialog({ table, onClose, peers, onReload }: {
   const [mode, setMode] = useState<Mode>(null)
 
   useEffect(() => {
-    if (!table) return setMode(null)
-    if (table.status === 'empty') setMode('order')
+    if (!table?.id) return setMode(null)
+    if (table?.status === 'empty') setMode('order')
     else setMode('hub')
   }, [table?.id, table?.status])
 
@@ -154,83 +156,54 @@ function CashierConfirmPay({ table, onClose, onReload }: {
   onClose: () => void
   onReload: () => void
 }) {
-  const { user } = useAuth()
-  const [order, setOrder] = useState<any>(null)
-  const [cashierName, setCashierName] = useState('')
-  const [settings, setSettings] = useState({ vat_percent: 0, service_percent: 0, global_discount_percent: 0 })
-  useEffect(() => {
-    if (user?.id) {
-      Promise.all([
-        supabase.from('profiles').select('full_name').eq('id', user.id).maybeSingle(),
-        supabase.from('user_roles').select('role').eq('user_id', user.id).maybeSingle(),
-      ]).then(([{ data: p }, { data: r }]) => {
-        const ROLE_LABEL: Record<string, string> = {
-          staff: 'Nhân viên', admin: 'Quản lý', cashier: 'Thu ngân', kitchen: 'Bếp',
-        }
-        const name = p?.full_name ?? ''
-        const role = r?.role ? (ROLE_LABEL[r.role] ?? r.role) : ''
-        setCashierName(role ? `${role} - ${name}` : name)
-      })
+  const [order, setOrder] = useState<Order | null>(null)
+  const [quote, setQuote] = useState<PaymentQuote | null>(null)
+  const [isPaying, setIsPaying] = useState(false)
+  const settings = { vat_percent: quote?.vat_percent ?? 0, service_percent: quote?.service_percent ?? 0 }
+  useOrderSync(async (canCommit) => {
+    try {
+      const current = await readOpenOrder(table)
+      const freshQuote = current ? await quoteOrder(current.id) : null
+      if (!canCommit()) return
+      setOrder(current && freshQuote ? { ...current, order_items: freshQuote.items } : null)
+      setQuote(freshQuote)
+    } catch (error: unknown) {
+      if (!canCommit()) return
+      setOrder(null)
+      setQuote(null)
+      toast.error(error instanceof Error ? error.message : 'Không thể tải hóa đơn.')
     }
-  }, [user?.id])
+  }, `${table.id}:${table.merged_group_id ?? ''}`)
 
-  useEffect(() => {
-    supabase.from('payment_settings').select('vat_percent, service_percent, global_discount_percent')
-      .eq('id', 1).maybeSingle()
-      .then(({ data }) => {
-        if (data) setSettings({ vat_percent: data.vat_percent ?? 0, service_percent: data.service_percent ?? 0, global_discount_percent: data.global_discount_percent ?? 0 })
-      })
-  }, [])
-
-  useEffect(() => {
-    ; (async () => {
-      const orderId = await findGroupOpenOrderId(table)
-      if (!orderId) return setOrder(null)
-      const { data } = await supabase.from('orders').select('*, order_items(*)').eq('id', orderId).maybeSingle()
-      setOrder(data)
-    })()
-  }, [table.id])
-
-  const subtotal = useMemo(() => {
-    if (!order?.order_items) return 0
-    return order.order_items.reduce((sum: number, it: any) =>
-      sum + (it.price_snapshot * it.quantity), 0)
-  }, [order?.order_items])
-
-  const { svcFee, vatFee, discountAmt, effectivePct, finalTotal } = useMemo(() => {
-    const svcFee = Math.round(subtotal * (settings.service_percent / 100))
-    const afterSvc = subtotal + svcFee
-    const vatFee = Math.round(afterSvc * (settings.vat_percent / 100))
-    const afterVAT = afterSvc + vatFee
-    const tablePct  = order?.discount_percent ?? 0
-    const globalPct = settings.global_discount_percent ?? 0
-    const effectivePct = tablePct > 0 ? tablePct : globalPct
-    const discountAmt = Math.round(afterVAT * (effectivePct / 100))
-    return { svcFee, vatFee, discountAmt, effectivePct, finalTotal: afterVAT - discountAmt }
-    //                                    ↑ thêm vào đây
-}, [subtotal, settings, order?.discount_percent])
-
+  const subtotal = quote?.subtotal ?? 0
+  const svcFee = quote?.service_fee ?? 0
+  const vatFee = quote?.vat_fee ?? 0
+  const discountAmt = quote?.discount_amount ?? 0
+  const effectivePct = quote?.discount_percent ?? 0
+  const finalTotal = quote?.total ?? 0
   const confirm = async () => {
-    if (!order) return
-    const cashierTag = `[Người thu: ${cashierName || 'Thu ngân'}]`
-    const updatedNotes = order.notes ? `${order.notes}\n${cashierTag}` : cashierTag
-    await supabase.from('orders').update({
-      is_paid: true,
-      paid_at: new Date().toISOString(),
-      total: subtotal,           // giữ subtotal, finalTotal tự tính khi cần
-      notes: updatedNotes,
-    }).eq('id', order.id)
-    await updateGroupStatus(table, 'needs_cleanup')
-    onReload()
-    toast.success('Đã xác nhận thanh toán → Bàn chờ dọn')
-    onClose()
+    if (!order || !quote || isPaying) return
+    setIsPaying(true)
+    try {
+      await payOrder(order.id, order.payment_method === 'cash' ? 'confirm_cash' : 'confirm_qr', quote.fingerprint)
+      onReload()
+      toast.success('Đã xác nhận thanh toán → Bàn chờ dọn')
+      onClose()
+    } catch (error: unknown) {
+      toast.error(readableError(error))
+      try {
+        const current = await readOpenOrder(table)
+        const freshQuote = current ? await quoteOrder(current.id) : null
+        setOrder(current && freshQuote ? { ...current, order_items: freshQuote.items } : null); setQuote(freshQuote)
+      } catch (refreshError: unknown) { setOrder(null); setQuote(null); toast.error(readableError(refreshError)) }
+    } finally { setIsPaying(false) }
   }
 
   if (!order) return <p className="mt-4 text-sm text-muted-foreground">Bàn chưa có hóa đơn.</p>
   return (
     <div className="mt-4 space-y-3">
       <div className="space-y-1 text-sm">
-        {(order.order_items ?? []).map((it: any) => (
+        {(order.order_items ?? []).map((it) => (
           <div key={it.id} className="flex justify-between">
             <span>{it.name_snapshot} × {it.quantity}</span>
             <span className="tabular-nums">{formatVND(it.price_snapshot * it.quantity)}</span>
@@ -272,7 +245,7 @@ function CashierConfirmPay({ table, onClose, onReload }: {
         <Button variant="outline" onClick={onClose}>
           <ChevronLeft className="mr-1 h-4 w-4" />Quay lại
         </Button>
-        <Button onClick={confirm}>
+        <Button onClick={confirm} disabled={!quote || isPaying}>
           <CheckCircle2 className="mr-1 h-4 w-4" />Xác nhận
         </Button>
       </div>
@@ -286,8 +259,8 @@ function CleanupPanel({ table, onClose, onReload }: {
   onReload: () => void
 }) {
   const cleanup = async () => {
-    await updateGroupStatus(table, 'empty')
-    if (table.merged_group_id) await unmergeGroup(table.merged_group_id)
+    try { await releaseTables(table.id, true) }
+    catch (error: unknown) { toast.error(readableError(error)); return }
     onReload() // ← patch UI ngay cho người thực hiện lệnh
     toast.success('Đã dọn xong → Bàn trống')
     onClose()

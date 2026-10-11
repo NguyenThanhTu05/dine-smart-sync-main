@@ -1,15 +1,17 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Users, UtensilsCrossed, Boxes, BookOpen, MapPin, QrCode, LogOut, ChefHat, Receipt, LayoutGrid, Search, User, Clock, Crosshair, Menu } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react';
+import { ChefHat,LayoutDashboard,LayoutGrid,LogOut,MapPin,Menu,QrCode,Receipt,User,Users,UtensilsCrossed } from 'lucide-react';
+import { NavLink,Outlet,useLocation } from 'react-router-dom';
+interface LayoutTab {to:string;icon:LucideIcon;label:string;badge?:number;end?:boolean}
 
-import { useAuth } from '@/contexts/AuthContext'
-import { NumberBadge, useGlobalCounts } from '@/hooks/useGlobalCounts'
-import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
-import { ROLE_LABEL } from '@/lib/roles'
-import { useState, useEffect } from 'react'
-import { supabase } from '@/integrations/supabase/client'
+import { NumberBadge } from '@/components/NumberBadge';
+import { Button } from '@/components/ui/button';
+import { Sheet,SheetContent,SheetTrigger } from '@/components/ui/sheet';
+import { useAuth } from '@/contexts/authState';
+import { useGlobalCounts } from '@/hooks/useGlobalCounts';
+import { supabase } from '@/integrations/supabase/client';
+import { useEffect,useState } from 'react';
 export default function AdminLayout() {
-  const { signOut, user, role } = useAuth()
+  const { signOut, user } = useAuth()
   const { tableAlerts, openBills, lowStock } = useGlobalCounts()
   const loc = useLocation()
   const [open, setOpen] = useState(false)
@@ -24,7 +26,7 @@ export default function AdminLayout() {
     setFullName(data?.full_name ?? null)
   })
   }, [user?.id])
-  const tabs = [
+  const tabs: LayoutTab[] = [
     { to: '/admin', icon: LayoutDashboard, label: 'Dashboard', end: true },
     { to: '/admin/tables', icon: LayoutGrid, label: 'Sơ đồ bàn', badge: tableAlerts },
     { to: '/admin/bills', icon: Receipt, label: 'Bill order', badge: openBills },
@@ -35,7 +37,7 @@ export default function AdminLayout() {
   
     { to: '/admin/me', icon: User, label: 'Tôi' },
   ]
-  const isActive = (t: any) => t.end ? loc.pathname === t.to : (loc.pathname === t.to || loc.pathname.startsWith(t.to + '/'))
+  const isActive = (t: LayoutTab) => t.end ? loc.pathname === t.to : (loc.pathname === t.to || loc.pathname.startsWith(t.to + '/'))
 
   const SidebarContent = ({ onNav }: { onNav?: () => void }) => (
     <>
@@ -62,7 +64,7 @@ export default function AdminLayout() {
             <NavLink
               key={t.to}
               to={t.to}
-              end={(t as any).end}
+              end={t.end}
               onClick={onNav}
               className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium ${active ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
             >
@@ -70,7 +72,7 @@ export default function AdminLayout() {
                 <t.icon className="h-4 w-4" />
               </div>
               <span className="truncate">{t.label}</span>
-              <NumberBadge n={(t as any).badge ?? 0} />
+              <NumberBadge n={t.badge ?? 0} />
             </NavLink>
           )
         })}

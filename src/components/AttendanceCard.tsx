@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { useAuth } from '@/contexts/authState'
 import { supabase } from '@/integrations/supabase/client'
-import { useAuth } from '@/contexts/AuthContext'
-import { LogIn, LogOut, MapPin, Loader2 } from 'lucide-react'
+import { errorMessage } from '@/lib/errors'
+import { getCurrentPosition,haversineMeters } from '@/lib/geo'
+import { Loader2,LogIn,LogOut,MapPin } from 'lucide-react'
+import { useCallback,useEffect,useRef,useState } from 'react'
 import { toast } from 'sonner'
-import { format } from 'date-fns'
-import { haversineMeters, getCurrentPosition } from '@/lib/geo'
+import { vietnamDayRange } from '../../supabase/functions/_shared/vietnamTime'
 
 interface Settings { latitude: number; longitude: number; radius_m: number }
 interface Log { id: string; kind: 'in' | 'out'; at: string; distance_m: number | null }
@@ -20,32 +21,49 @@ export function AttendanceCard() {
   const [pos, setPos] = useState<{ lat: number; lon: number; dist: number } | null>(null)
   const [locating, setLocating] = useState(false)
 
-  const load = async () => {
-    const { data: s } = await supabase.from('attendance_settings').select('*').eq('id', 1).maybeSingle()
-    setSettings(s as any)
-    if (!user) return
-    const start = new Date(); start.setHours(0, 0, 0, 0)
-    const { data: l } = await supabase.from('attendance_logs')
-      .select('id,kind,at,distance_m')
-      .eq('user_id', user.id)
-      .gte('at', start.toISOString())
-      .order('at', { ascending: true })
-    setToday((l ?? []) as Log[])
-  }
-  useEffect(() => { load() }, [user?.id])
+  const loadVersion = useRef(0)
+  const invalidateloadVersion = useCallback(() => { loadVersion.current++ }, [])
+  const load = useCallback(async () => {
+    const version = ++loadVersion.current
+    if (!user?.id) { setToday([]); return }
+    try {
+      const { start, end } = vietnamDayRange()
+      const [s,l] = await Promise.all([
+        supabase.from('attendance_settings').select('*').eq('id',1).maybeSingle(),
+        supabase.from('attendance_logs').select('id,kind,at,distance_m').eq('user_id',user.id).gte('at',start).lt('at',end).order('at'),
+      ])
+      if (version !== loadVersion.current) return
+      if (s.error || l.error) throw s.error ?? l.error
+      setSettings(s.data as Settings | null); setToday((l.data ?? []) as Log[])
+    } catch (error) {
+      if (version === loadVersion.current) toast.error((error as {message?:string}).message ?? 'Không tải được chấm công')
+    }
+  }, [user?.id])
+  useEffect(() => {
+    void load()
+    const refresh = () => { void load() }
+    const channel = supabase.channel(`attendance-${crypto.randomUUID()}`)
+      .on('postgres_changes',{event:'*',schema:'public',table:'attendance_logs',filter:`user_id=eq.${user?.id}`},refresh)
+      .on('postgres_changes',{event:'*',schema:'public',table:'attendance_settings'},refresh)
+      .subscribe(status => { if (status === 'SUBSCRIBED') refresh() })
+    window.addEventListener('focus',refresh)
+    const timer = setInterval(refresh,60000)
+    return () => { invalidateloadVersion(); clearInterval(timer); window.removeEventListener('focus',refresh); void supabase.removeChannel(channel) }
+  }, [load,user?.id,invalidateloadVersion])
 
-  const refreshPos = async () => {
-    if (!settings) return
+  const latitude = settings?.latitude, longitude = settings?.longitude
+  const refreshPos = useCallback(async () => {
+    if (latitude == null || longitude == null) return
     setLocating(true)
     try {
       const p = await getCurrentPosition()
-      const dist = haversineMeters(p.coords.latitude, p.coords.longitude, settings.latitude, settings.longitude)
+      const dist = haversineMeters(p.coords.latitude, p.coords.longitude, latitude, longitude)
       setPos({ lat: p.coords.latitude, lon: p.coords.longitude, dist })
-    } catch (e: any) {
-      toast.error(e.message ?? 'Không lấy được vị trí')
+    } catch (e: unknown) {
+      toast.error(errorMessage(e) ?? 'Không lấy được vị trí')
     } finally { setLocating(false) }
-  }
-  useEffect(() => { if (settings) refreshPos() /* eslint-disable-next-line */ }, [settings?.latitude, settings?.longitude])
+  }, [latitude,longitude])
+  useEffect(() => { void refreshPos() }, [refreshPos])
 
   const lastIn = [...today].reverse().find(l => l.kind === 'in')
   const lastOut = [...today].reverse().find(l => l.kind === 'out')
@@ -57,13 +75,15 @@ export function AttendanceCard() {
   const punch = async (kind: 'in' | 'out') => {
     if (!user || !pos || !inRange) return
     setBusy(true)
-    const { error } = await supabase.from('attendance_logs').insert({
-      user_id: user.id, kind, latitude: pos.lat, longitude: pos.lon, distance_m: Math.round(pos.dist),
-    })
-    setBusy(false)
-    if (error) return toast.error(error.message)
-    toast.success(kind === 'in' ? 'Đã Check-in' : 'Đã Check-out')
-    load()
+    try {
+      const fresh = await getCurrentPosition()
+      const { error } = await supabase.rpc('restaurant_attendance', {
+        p_kind: kind, p_lat: fresh.coords.latitude, p_lon: fresh.coords.longitude, p_request: crypto.randomUUID(),
+      })
+      if (error) throw error
+      toast.success(kind === 'in' ? 'Đã Check-in' : 'Đã Check-out')
+    } catch (error) { toast.error(error instanceof Error ? error.message : (error as { message?: string }).message ?? 'Không thể chấm công') }
+    finally { setBusy(false); void load() }
   }
 
   return (
@@ -108,7 +128,7 @@ export function AttendanceCard() {
             <div className="space-y-1 border-t pt-2 text-xs">
               {today.map(l => (
                 <div key={l.id} className="flex items-center justify-between">
-                  <span><Badge variant={l.kind === 'in' ? 'default' : 'secondary'} className="mr-2">{l.kind === 'in' ? 'IN' : 'OUT'}</Badge>{format(new Date(l.at), 'HH:mm:ss')}</span>
+                  <span><Badge variant={l.kind === 'in' ? 'default' : 'secondary'} className="mr-2">{l.kind === 'in' ? 'IN' : 'OUT'}</Badge>{new Date(l.at).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })}</span>
                   {l.distance_m != null && <span className="text-muted-foreground">{l.distance_m} m</span>}
                 </div>
               ))}

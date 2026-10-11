@@ -1,8 +1,13 @@
+import { readOrderItems } from '@/lib/readOrderItems'
+import type { BillItem } from '@/lib/domainTypes'
+import { invoiceAmounts,paymentQuoteSchema } from '@/lib/invoiceAmounts'
+import { quoteOrder,readableError } from '@/lib/restaurantTransactions'
+import { toast } from 'sonner'
 // TypeScript / React
 import { supabase } from '@/integrations/supabase/client'
-import { formatVND } from '@/hooks/useGlobalCounts'
+import { formatVND } from '@/lib/formatVND'
 
-const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
+const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
 
 export interface PrintBillOptions {
   tableNameOverride?: string
@@ -18,42 +23,28 @@ const ROLE_LABEL: Record<string, string> = {
 }
 
 export async function printBill(orderId: string, opts: PrintBillOptions = {}) {
-  const [{ data: order }, { data: ps }] = await Promise.all([
-    supabase.from('orders').select('*, order_items(*), restaurant_tables(name, areas(name))').eq('id', orderId).maybeSingle(),
+  try {
+  const [orderResult, settingsResult] = await Promise.all([
+    supabase.from('orders').select('*, restaurant_tables(name, areas(name))').eq('id', orderId).maybeSingle(),
     supabase.from('payment_settings').select('*').eq('id', 1).maybeSingle(),
   ])
-  if (!order) return
+  if (orderResult.error || settingsResult.error) throw orderResult.error ?? settingsResult.error
+  const order = orderResult.data
+  const ps = settingsResult.data
+  if (!order) throw new Error('Không tìm thấy hóa đơn')
 
-  // 1. LẤY TÊN NGƯỜI PHỤC VỤ (Cố định chuẩn xác từ staff_id gốc)
- let serverName = ''
-  if (order.staff_id) {
-    const [{ data: pServer }, { data: rServer }] = await Promise.all([
-      supabase.from('profiles').select('full_name').eq('id', order.staff_id).maybeSingle(),
-      supabase.from('user_roles').select('role').eq('user_id', order.staff_id).maybeSingle(),
-    ])
-    const sName = pServer?.full_name ?? ''
-    const sRole = rServer?.role ? (ROLE_LABEL[rServer.role] ?? rServer.role) : ''
-    serverName = sRole ? `${sRole} - ${sName}` : sName
-  }
-
-  // 2. LẤY TÊN NGƯỜI THU TIỀN (Nếu đang in tính tiền thì lấy user hiện tại, nếu xem lại bill cũ thì giải mã từ vết chốt đơn)
-  
-
-let cashierName = ''
-if (opts.currentUserId) {
-  const [{ data: pCashier }, { data: rCashier }] = await Promise.all([
-    supabase.from('profiles').select('full_name').eq('id', opts.currentUserId).maybeSingle(),
-    supabase.from('user_roles').select('role').eq('user_id', opts.currentUserId).maybeSingle(),
-  ])
-  const name = pCashier?.full_name ?? ''
-  const role = rCashier?.role ? (ROLE_LABEL[rCashier.role] ?? rCashier.role) : ''
-  cashierName = role ? `${role} - ${name}` : name
-} else if (order.notes && order.notes.includes('[Người thu:')) {
-  const match = order.notes.match(/\[Người thu:\s*([^\]]+)\]/)
-  if (match && match[1]) cashierName = match[1].trim()
-}
+  const freshQuote = order.is_paid ? null : await quoteOrder(order.id)
+  const snapshotResult = paymentQuoteSchema.safeParse(order.payment_snapshot)
+  const snapshot = freshQuote ?? (snapshotResult.success ? snapshotResult.data : null)
+  const { data: directory, error: directoryError } = await supabase.rpc('restaurant_directory')
+  if (directoryError) throw directoryError
+  const server = directory?.find(p => p.id === order.staff_id)
+  const cashier = directory?.find(p => p.id === opts.currentUserId)
+  const serverName = snapshot?.staff_name ?? (server ? `${ROLE_LABEL[server.role ?? 'staff']} - ${server.full_name}` : '')
+  let cashierName = order.is_paid ? snapshot?.cashier_name ?? '' : cashier ? `${ROLE_LABEL[cashier.role ?? 'staff']} - ${cashier.full_name}` : ''
+  if (order.is_paid && !cashierName && order.notes) cashierName = order.notes.match(/\[Người thu:\s*([^\]]+)\]/)?.[1]?.trim() ?? ''
   let tableLabel = opts.tableNameOverride ?? order.restaurant_tables?.name ?? '—'
-  if (!opts.tableNameOverride && order.restaurant_tables) {
+  if (!snapshot?.table_name && !opts.tableNameOverride && order.restaurant_tables) {
     const { data: g } = await supabase.from('restaurant_tables')
       .select('name, merged_group_id, sort_order, area_id')
       .eq('id', order.table_id).maybeSingle()
@@ -64,11 +55,12 @@ if (opts.currentUserId) {
     }
   }
 
-  const items: any[] = order.order_items ?? []
+  if (snapshot?.table_name) tableLabel = snapshot.table_name
+  const items: BillItem[] = snapshot?.items ?? (await readOrderItems([order.id])).get(order.id) ?? []
 
-  const groupedItems = items.reduce((acc: any[], it) => {
+  const groupedItems = items.reduce<(BillItem & {_key:string})[]>((acc, it) => {
     const key = `${it.name_snapshot}__${it.price_snapshot}__${it.notes ?? ''}`
-    const existing = acc.find((x: any) => x._key === key)
+    const existing = acc.find((x) => x._key === key)
     if (existing) {
       existing.quantity += Number(it.quantity)
     } else {
@@ -77,30 +69,21 @@ if (opts.currentUserId) {
     return acc
   }, [])
 
-  const subtotal = groupedItems.reduce((s: number, it: any) => s + Number(it.price_snapshot) * Number(it.quantity), 0)
-const vatPct = Number(ps?.vat_percent ?? 0)
-const svcPct = Number(ps?.service_percent ?? 0)
-const globalPct = Number(ps?.global_discount_percent ?? 0)
-const tablePct  = Number(order.discount_percent ?? 0)
-const discountPct = tablePct > 0 ? tablePct : globalPct
-const svc = Math.round((subtotal * svcPct) / 100)
-const afterService = subtotal + svc
-const vat = Math.round((afterService * vatPct) / 100)
-const afterVAT = afterService + vat
-const discountAmt = Math.round((afterVAT * discountPct) / 100)
-const total = afterVAT - discountAmt
+  const amounts = freshQuote ?? invoiceAmounts(order, { service_percent: Number(ps?.service_percent ?? 0), vat_percent: Number(ps?.vat_percent ?? 0), global_discount_percent: Number(ps?.global_discount_percent ?? 0) })
+  const { subtotal, service_percent: svcPct, vat_percent: vatPct, discount_percent: discountPct,
+    service_fee: svc, vat_fee: vat, discount_amount: discountAmt, total } = amounts
   const methodLabel: Record<string, string> = { 
     cash: 'Tiền mặt', 
     qr: 'Chuyển khoản QR', 
     card: 'Thẻ' 
   }
   
-  const finalPaymentMethod = opts.overridePaymentMethod || order.payment_method || 'cash'
+  const finalPaymentMethod = order.is_paid ? snapshot?.payment_method ?? order.payment_method ?? 'cash' : opts.overridePaymentMethod || order.payment_method || 'cash'
   const paidAt = order.paid_at ? new Date(order.paid_at) : new Date()
   const fmtDate = (d: Date) => d.toLocaleString('vi-VN', { hour12: false })
   const invoiceNo = `HD-${(order.id || '').slice(0, 8).toUpperCase()}`
 
-  const rowsHtml = groupedItems.map((it: any, i: number) => `
+  const rowsHtml = groupedItems.map((it, i) => `
     <tr>
       <td class="c">${i + 1}</td>
       <td>${esc(it.name_snapshot)}${it.notes ? `<div class="note">${esc(it.notes)}</div>` : ''}</td>
@@ -167,7 +150,7 @@ const total = afterVAT - discountAmt
 ${svcPct > 0 ? `<div class="row"><span>Phí dịch vụ (${svcPct}%)</span><span>${formatVND(svc)}</span></div>` : ''}
 ${vatPct > 0 ? `<div class="row"><span>VAT (${vatPct}%)</span><span>${formatVND(vat)}</span></div>` : ''}
 ${discountPct > 0 ? `<div class="row" style="color:#c00"><span>Giảm giá (${discountPct}%)</span><span>-${formatVND(discountAmt)}</span></div>` : ''}
-    <div class="grand"><span>TỔNG THANH TOÁN</span><span>${formatVND(total)}</span></div>
+    <div class="grand"><span>TỔNG THANH TOÁN</span><span>${total === null ? '—' : formatVND(total)}</span></div>
   </div>
   <div class="footer">
     <div class="thanks">${esc(ps?.footer_note || 'Cảm ơn quý khách và hẹn gặp lại!')}</div>
@@ -182,5 +165,6 @@ ${discountPct > 0 ? `<div class="row" style="color:#c00"><span>Giảm giá (${di
   document.body.appendChild(iframe)
   const doc = iframe.contentDocument!
   doc.open(); doc.write(html); doc.close()
-  setTimeout(() => { try { iframe.remove() } catch {} }, 30000)
+  setTimeout(() => { try { iframe.remove() } catch { /* The browser may already have closed the print window. */ } }, 30000)
+  } catch (error: unknown) { toast.error(readableError(error)) }
 }

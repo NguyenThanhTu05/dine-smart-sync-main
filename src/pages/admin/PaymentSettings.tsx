@@ -1,15 +1,20 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { Card } from '@/components/ui/card'
+import { ImageUpload } from '@/components/ImageUpload'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { supabase } from '@/integrations/supabase/client'
+import type { Tables } from '@/integrations/supabase/types'
+import { decimalInput,optionalText,phoneInput } from '@/lib/inputValidation'
+import { useEffect,useState } from 'react'
 import { toast } from 'sonner'
-import { ImageUpload } from '@/components/ImageUpload'
+type PercentKey = 'vat_percent' | 'service_percent' | 'global_discount_percent'
+type PaymentForm = Partial<Omit<Tables<'payment_settings'>, 'id' | 'updated_at' | PercentKey>> & Partial<Record<PercentKey, number | string | null>>
+const percentKeys = ['vat_percent', 'service_percent', 'global_discount_percent'] as const
 
 // Input số % — click xóa 0, nhập tuỳ ý
-function PercentInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+function PercentInput({ value, onChange }: { value: number | string; onChange: (v: string) => void }) {
   return (
     <Input
       type="number"
@@ -19,16 +24,14 @@ function PercentInput({ value, onChange }: { value: number; onChange: (v: number
       placeholder="0"
       onFocus={(e) => e.target.select()}
       onChange={(e) => {
-        const val = e.target.value
-        if (val === '') { onChange(0); return }
-        onChange(Math.min(100, Math.max(0, Number(val) || 0)))
+        onChange(e.target.value)
       }}
     />
   )
 }
 
 export default function PaymentSettings() {
-  const [s, setS] = useState<any>({
+  const [s, setS] = useState<PaymentForm>({
     qr_image_url: '', bank_name: '', account_holder: '', account_number: '',
     shop_name: '', logo_url: '', address: '', phone: '', tax_code: '', slogan: '',
     footer_note: 'Cảm ơn quý khách và hẹn gặp lại!',
@@ -39,16 +42,25 @@ export default function PaymentSettings() {
   useEffect(() => {
     supabase
       .from('payment_settings')
-      .select('*')
+      .select('account_holder,account_number,address,bank_name,extra_qr_url,footer_note,global_discount_percent,logo_url,phone,policy_note,qr_image_url,service_percent,shop_name,slogan,tax_code,vat_percent')
       .eq('id', 1)
       .single()
-      .then(({ data }) => data && setS((prev: any) => ({ ...prev, ...data })))
+      .then(({ data }) => { if (data) setS(prev => ({ ...prev, ...data })); })
   }, [])
 
-  const upd = (k: string, v: any) => setS((prev: any) => ({ ...prev, [k]: v }))
+  const upd = (k: keyof PaymentForm, v: string | number | null) => setS((prev) => ({ ...prev, [k]: v }))
 
   const save = async () => {
-    const { id, ...dataToUpdate } = s
+    const dataToUpdate: Omit<PaymentForm, PercentKey> & Partial<Record<PercentKey, number>> = {}
+    try {
+      for (const key of percentKeys) dataToUpdate[key] = decimalInput(s[key], 'Phần trăm', 6, 100)
+      dataToUpdate.phone = phoneInput(s.phone)
+      for (const key of Object.keys(s) as (keyof PaymentForm)[]) {
+        if (percentKeys.some(percent => percent === key) || key === 'phone') continue
+        const value = s[key]
+        if (typeof value === 'string') Object.assign(dataToUpdate, { [key]: optionalText(value, key, key.includes('url') ? 2048 : 10000) })
+      }
+    } catch (error) { return toast.error((error as Error).message) }
     const { error } = await supabase
       .from('payment_settings')
       .update({ ...dataToUpdate, updated_at: new Date().toISOString() })

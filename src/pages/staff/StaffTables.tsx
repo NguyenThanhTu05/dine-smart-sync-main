@@ -1,19 +1,21 @@
-import { useEffect, useState } from 'react'
-import { useTables, RestaurantTable, STATUS_LABEL } from '@/hooks/useTables'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { OrderPanel,PayPanel,ServedPanel } from '@/components/tables/TablePanels'
+import { TablesGrid } from '@/components/tables/TablesGrid'
 import { Badge } from '@/components/ui/badge'
-import { CreditCard, Plus, BellRing, CheckCircle2, Unlink } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Dialog,DialogContent,DialogHeader,DialogTitle } from '@/components/ui/dialog'
+import { RestaurantTable,STATUS_LABEL,useTables } from '@/hooks/useTables'
+import { readableError,releaseTables } from '@/lib/restaurantTransactions'
+import { unmergeGroup } from '@/lib/tableGroupActions'
+import { BellRing,CheckCircle2,CreditCard,Plus,Unlink } from 'lucide-react'
+import { useEffect,useState } from 'react'
 import { toast } from 'sonner'
-import { OrderPanel, ServedPanel, PayPanel } from '@/components/tables/TablePanels'
-import { TablesGrid, unmergeGroup } from '@/components/tables/TablesGrid'
-import { updateGroupStatus } from '@/lib/tableGroup'
 
 export default function StaffTables() {
   const [selected, setSelected] = useState<RestaurantTable | null>(null)
   
   // SỬA TẠI ĐÂY: Lấy thêm hàm reload từ hook useTables để làm mới sơ đồ thời gian thực
-  const { tables, reload } = useTables()
+  const { tables, reload, loading, error } = useTables()
+  const current = selected && !loading && !error ? tables.find(t => t.id === selected.id) ?? null : selected
 
   return (
     <div>
@@ -29,9 +31,9 @@ export default function StaffTables() {
         }
       />
       <TableActionDialog
-        table={selected}
+        table={current}
         onClose={() => setSelected(null)}
-        peers={selected?.merged_group_id ? tables.filter(x => x.merged_group_id === selected.merged_group_id && x.id !== selected.id) : []}
+        peers={current?.merged_group_id ? tables.filter(x => x.merged_group_id === current.merged_group_id && x.id !== current.id) : []}
         onReload={reload} // Truyền hàm reload xuống Dialog hành động
       />
     </div>
@@ -43,16 +45,16 @@ function TableActionDialog({ table, onClose, peers, onReload }: {
 }) {
   const [mode, setMode] = useState<'menu' | 'order' | 'served' | 'pay' | null>(null)
   useEffect(() => {
-  if (!table) return
-  if (table.status === 'empty') setMode('order')
+  if (!table?.id) return
+  if (table?.status === 'empty') setMode('order')
   else setMode(null)  // serving/awaiting_payment/needs_cleanup → hiện hub
 }, [table?.id, table?.status])  // ← thêm status vào dependency
   if (!table) return null
   const close = () => { setMode(null); onClose() }
 
  const cleanup = async () => {
-  await updateGroupStatus(table, 'empty')
-  if (table.merged_group_id) await unmergeGroup(table.merged_group_id)
+  try { await releaseTables(table.id, true) }
+  catch (error: unknown) { toast.error(readableError(error)); return }
   onReload()   // ← đã có khi merged_group_id, giờ chuyển ra ngoài if để luôn chạy
   toast.success('Đã dọn xong → Bàn trống')
   close()

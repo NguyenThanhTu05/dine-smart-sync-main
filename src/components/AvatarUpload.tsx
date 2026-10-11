@@ -1,12 +1,13 @@
-import { useRef, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { Camera, Upload, Trash2, Loader2, Video, RotateCw } from 'lucide-react'
-import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Avatar,AvatarFallback,AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
+import { Dialog,DialogContent,DialogFooter,DialogHeader,DialogTitle } from '@/components/ui/dialog'
+import { DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuSeparator,DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { supabase } from '@/integrations/supabase/client'
+import { errorMessage } from '@/lib/errors'
+import { cn } from '@/lib/utils'
+import { Camera,Loader2,RotateCw,Trash2,Upload,Video } from 'lucide-react'
+import { useRef,useState } from 'react'
+import { toast } from 'sonner'
 
 interface Props {
   value: string | null | undefined
@@ -54,13 +55,13 @@ export function AvatarUpload({ value, fallback = 'A', folder = 'avatars', size =
 
       try {
         await onChange(data.publicUrl)
-      } catch (onChangeError: any) {
-        throw new Error(`Lỗi cập nhật bảng Profiles: ${onChangeError.message || onChangeError}`)
+      } catch (onChangeError: unknown) {
+        throw new Error(`Lỗi cập nhật bảng Profiles: ${errorMessage(onChangeError) || onChangeError}`)
       }
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e)
-      toast.error(e.message || 'Tải ảnh thất bại')
+      toast.error(errorMessage(e) || 'Tải ảnh thất bại')
     } finally { 
       setBusy(false) 
     }
@@ -82,7 +83,7 @@ export function AvatarUpload({ value, fallback = 'A', folder = 'avatars', size =
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
       }
-    } catch (err: any) {
+    } catch {
       setIsCamOpen(false)
       toast.error('Không thể truy cập Máy ảnh. Hãy chắc chắn bạn chạy trên localhost/HTTPS và cấp quyền đầy đủ!')
     }

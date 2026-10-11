@@ -39,11 +39,11 @@ export function getCurrentPosition(): Promise<GeolocationPosition> {
                   reject(new Error('Lỗi GPS: ' + err.message))
               }
             },
-            { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
           )
         }, 800)
       },
-      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 },
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 },
     )
   })
 }

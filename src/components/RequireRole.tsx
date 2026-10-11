@@ -1,6 +1,6 @@
-import { useAuth, AppRole } from '@/contexts/AuthContext'
-import { Navigate, useLocation } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
+import { AppRole,useAuth } from '@/contexts/authState';
+import { Loader2 } from 'lucide-react';
+import { Navigate,useLocation } from 'react-router-dom';
 
 export function RequireRole({ role, children }: { role: AppRole; children: JSX.Element }) {
   const { session, role: myRole, loading, isRecovery } = useAuth()

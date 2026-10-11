@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
 import { Button } from '@/components/ui/button'
-import { Camera, Upload, X, Loader2, Video, RotateCw } from 'lucide-react'
-import { toast } from 'sonner'
+import { Dialog,DialogContent,DialogFooter,DialogHeader,DialogTitle } from '@/components/ui/dialog'
+import { supabase } from '@/integrations/supabase/client'
+import { errorMessage } from '@/lib/errors'
 import { cn } from '@/lib/utils'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Camera,Loader2,RotateCw,Upload,Video,X } from 'lucide-react'
+import { useRef,useState } from 'react'
+import { toast } from 'sonner'
 
 interface Props {
   value: string | null | undefined
@@ -50,8 +51,8 @@ export function ImageUpload({ value, onChange, folder = 'menu', className, aspec
       
       onChange(data.publicUrl)
       toast.success('Đã tải ảnh lên thành công')
-    } catch (e: any) {
-      toast.error(e.message ?? 'Tải ảnh lỗi')
+    } catch (e: unknown) {
+      toast.error(errorMessage(e) ?? 'Tải ảnh lỗi')
     } finally { 
       setBusy(false) 
     }
@@ -73,7 +74,7 @@ export function ImageUpload({ value, onChange, folder = 'menu', className, aspec
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
       }
-    } catch (err: any) {
+    } catch {
       setIsCamOpen(false)
       toast.error('Không thể truy cập Máy ảnh. Hãy chắc chắn bạn chạy trên localhost hoặc HTTPS và đã cấp quyền Camera!')
     }

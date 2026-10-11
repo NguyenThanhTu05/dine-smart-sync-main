@@ -1,20 +1,42 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { readPages } from '../../../supabase/functions/_shared/readPages'
 import { Badge } from '@/components/ui/badge'
-import { formatVND } from '@/hooks/useGlobalCounts'
-import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  PieChart, Pie, Cell, Legend,
-} from 'recharts'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { supabase } from '@/integrations/supabase/client'
+import { loadPaidReport } from '../../../supabase/functions/_shared/loadPaidReport'
+import { formatVND } from '@/lib/formatVND'
+import { dashboardRevenue } from '@/lib/dashboardRevenue'
+import { subscribeOrderChanges } from '@/lib/orderSync'
+import { ROLE_LABEL } from '@/lib/roles'
+import { subscribeTableChanges } from '@/lib/tableSync'
 import { format } from 'date-fns'
+import {
+CalendarDays,
+ChevronLeft,ChevronRight,
+CircleDot,
+Package,
+Receipt,
+Trophy,
+UserCheck,
+Users,
+Utensils
+} from 'lucide-react'
+import { useCallback,useEffect,useRef,useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-  TrendingUp, Receipt, Package, Trophy, CalendarDays,
-  Users, UserCheck, CircleDot, ChevronLeft, ChevronRight, Utensils
-} from 'lucide-react'
-import { ROLE_LABEL } from '@/lib/roles'
+Area,
+AreaChart,
+CartesianGrid,
+Cell,Legend,
+Pie,
+PieChart,
+ResponsiveContainer,
+Tooltip,
+XAxis,YAxis,
+} from 'recharts'
+import { toast } from 'sonner'
+import { paidSales } from '../../../supabase/functions/_shared/paidSales'
+import { vietnamDayKey,vietnamDayRange,vietnamPeriodRange } from '../../../supabase/functions/_shared/vietnamTime'
 
 const PIE_COLORS = ['hsl(var(--primary))', 'hsl(24 95% 60%)', 'hsl(160 70% 45%)', 'hsl(280 70% 60%)', 'hsl(200 80% 55%)']
 
@@ -37,13 +59,14 @@ export default function AdminDashboard() {
   // Quản lý chế độ xem (Mặc định ban đầu là xem theo Ngày)
   const [viewMode, setViewMode] = useState<ViewMode>('day')
   // Mốc thời gian neo cố định để dịch chuyển qua lại bằng mũi tên
-  const [currentAnchorDate, setCurrentAnchorDate] = useState<Date>(new Date())
+  const [currentAnchorDate, setCurrentAnchorDate] = useState<Date>(() => new Date(vietnamDayKey() + 'T12:00:00'))
 
   // State lưu trữ số liệu tổng hợp động
-  const [totalRevenue, setTotalRevenue] = useState(0)
+  const [totalRevenue, setTotalRevenue] = useState<number | null>(0)
   const [totalOrders, setTotalOrders] = useState(0)
+  const [legacyInvoiceCount, setLegacyInvoiceCount] = useState(0)
   const [topItems, setTopItems] = useState<TopItemWithImage[]>([])
-  const [chartSeries, setChartSeries] = useState<{ dateLabel: string; revenue: number; orders: number }[]>([])
+  const [chartSeries, setChartSeries] = useState<{ dateLabel: string; revenue: number | null; orders: number }[]>([])
 
   // State nhân viên đang online tại quán
   const [emptyTableCount, setEmptyTableCount] = useState(0)
@@ -101,183 +124,60 @@ export default function AdminDashboard() {
   }
 
   // Hàm bốc dữ liệu báo cáo từ Supabase và phân tách theo chế độ xem chọn
-  const loadDashboardData = async () => {
-    let startIso = ''
-    let endIso = ''
-
-    // Thiết lập chính xác mốc thời gian ISO đầu và cuối ca dựa theo Chế độ được chọn
-    if (viewMode === 'day') {
-      const start = new Date(currentAnchorDate); start.setHours(0, 0, 0, 0)
-      const end = new Date(currentAnchorDate); end.setHours(23, 59, 59, 999)
-      startIso = start.toISOString()
-      endIso = end.toISOString()
-    } else if (viewMode === 'week') {
-      const d = new Date(currentAnchorDate)
-      const day = d.getDay()
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1)
-      const monday = new Date(d.setDate(diff)); monday.setHours(0, 0, 0, 0)
-      const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999)
-      startIso = monday.toISOString()
-      endIso = sunday.toISOString()
-    } else if (viewMode === 'month') {
-      const start = new Date(currentAnchorDate.getFullYear(), currentAnchorDate.getMonth(), 1, 0, 0, 0, 0)
-      const end = new Date(currentAnchorDate.getFullYear(), currentAnchorDate.getMonth() + 1, 0, 23, 59, 59, 999)
-      startIso = start.toISOString()
-      endIso = end.toISOString()
-    } else {
-      const start = new Date(currentAnchorDate.getFullYear(), 0, 1, 0, 0, 0, 0)
-      const end = new Date(currentAnchorDate.getFullYear(), 11, 31, 23, 59, 59, 999)
-      startIso = start.toISOString()
-      endIso = end.toISOString()
-    }
-
-    // 0. Lấy cài đặt thanh toán trước
-    const { data: ps } = await supabase
-      .from('payment_settings')
-      .select('vat_percent, service_percent, global_discount_percent')
-      .eq('id', 1)
-      .maybeSingle()
-    const vatPct = ps?.vat_percent ?? 0
-    const svcPct = ps?.service_percent ?? 0
-    const globalDiscPct = ps?.global_discount_percent ?? 0
-
-    // THÊM VÀO ĐÂY — hàm tính giá cuối dùng chung
-    const calcFinal = (subtotal: number, orderDiscPct: number): number => {
-      const afterSvc = subtotal + Math.round(subtotal * svcPct / 100)
-      const afterVat = afterSvc + Math.round(afterSvc * vatPct / 100)
-      // Nếu bàn có giảm giá riêng → dùng của bàn, ngược lại dùng global
-      const effectivePct = orderDiscPct > 0 ? orderDiscPct : globalDiscPct
-      return afterVat - Math.round(afterVat * effectivePct / 100)
-    }
-
-    // 1. Quét tổng doanh thu các đơn hàng thành công
-    const { data: orders } = await supabase
-      .from('orders')
-      .select('total, paid_at, discount_percent')  // ← thêm discount_percent
-      .eq('is_paid', true)
-      .gte('paid_at', startIso)
-      .lte('paid_at', endIso)
-
-    const paidOrders = orders ?? []
-    const revenueSum = paidOrders.reduce((sum, o) => {
-      return sum + calcFinal(Number(o.total), Number(o.discount_percent ?? 0))
-    }, 0)
-
-    setTotalRevenue(revenueSum)
+  const dashboardVersion = useRef(0)
+  const invalidatedashboardVersion = useCallback(() => { dashboardVersion.current++ }, [])
+  const loadDashboardData = useCallback(async () => {
+    const request = ++dashboardVersion.current
+    try {
+    const { start: startIso, end: endIso } = vietnamPeriodRange(currentAnchorDate, viewMode)
+    const orders = await loadPaidReport(
+      (offset, last) => supabase.from('orders').select('id,total,paid_at,discount_percent,payment_snapshot')
+        .eq('is_paid', true).gte('paid_at', startIso).lt('paid_at', endIso).order('id').range(offset,last),
+      (ids, offset, last) => supabase.from('order_items').select('order_id,menu_item_id,name_snapshot,quantity')
+        .in('order_id', ids).order('id').range(offset,last),
+    )
+    const { data: menuImages, error: imageError } = await supabase.from('menu_items').select('id,image_url')
+    if (imageError) throw imageError
+    const images = new Map((menuImages ?? []).map(item => [item.id,item.image_url]))
+    if (request !== dashboardVersion.current) return
+    const report = dashboardRevenue(orders, currentAnchorDate, viewMode)
+    const { paidOrders } = report
+    setTotalRevenue(report.totalRevenue)
+    setLegacyInvoiceCount(report.legacyCount)
     setTotalOrders(paidOrders.length)
-
-    // 2. Gom nhóm dữ liệu vẽ đồ thị linh hoạt
-    let seriesData: { dateLabel: string; revenue: number; orders: number }[] = []
-
-    if (viewMode === 'day') {
-      for (let h = 0; h < 24; h++) {
-        seriesData.push({ dateLabel: `${h}h`, revenue: 0, orders: 0 })
-      }
-      paidOrders.forEach(o => {
-        if (o.paid_at) {
-          const hour = new Date(o.paid_at).getHours()
-          if (hour >= 0 && hour < 24) {
-            seriesData[hour].revenue += calcFinal(Number(o.total), Number(o.discount_percent ?? 0))
-            seriesData[hour].orders += 1
-          }
-        }
-      })
-    } else if (viewMode === 'week') {
-      const daysOfWeekLabels = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'CN']
-      seriesData = daysOfWeekLabels.map(label => ({ dateLabel: label, revenue: 0, orders: 0 }))
-      paidOrders.forEach(o => {
-        if (o.paid_at) {
-          const od = new Date(o.paid_at)
-          const oDay = od.getDay()
-          const idx = oDay === 0 ? 6 : oDay - 1
-          if (idx >= 0 && idx < 7) {
-            seriesData[idx].revenue += calcFinal(Number(o.total), Number(o.discount_percent ?? 0))
-            seriesData[idx].orders += 1
-          }
-        }
-      })
-    } else if (viewMode === 'month') {
-      const endMonthDate = new Date(currentAnchorDate.getFullYear(), currentAnchorDate.getMonth() + 1, 0)
-      const totalDays = endMonthDate.getDate()
-      for (let i = 1; i <= totalDays; i++) {
-        seriesData.push({ dateLabel: `N${i}`, revenue: 0, orders: 0 })
-      }
-      paidOrders.forEach(o => {
-        if (o.paid_at) {
-          const dateNum = new Date(o.paid_at).getDate()
-          if (dateNum >= 1 && dateNum <= totalDays) {
-            seriesData[dateNum - 1].revenue += calcFinal(Number(o.total), Number(o.discount_percent ?? 0))
-            seriesData[dateNum - 1].orders += 1
-          }
-        }
-      })
-    } else {
-      for (let m = 1; m <= 12; m++) {
-        seriesData.push({ dateLabel: `Th ${m}`, revenue: 0, orders: 0 })
-      }
-      paidOrders.forEach(o => {
-        if (o.paid_at) {
-          const monthIdx = new Date(o.paid_at).getMonth()
-          if (monthIdx >= 0 && monthIdx < 12) {
-            seriesData[monthIdx].revenue += calcFinal(Number(o.total), Number(o.discount_percent ?? 0))
-            seriesData[monthIdx].orders += 1
-          }
-        }
-      })
-    }
-    setChartSeries(seriesData)
+    setChartSeries(report.chartSeries)
 
     // 3. Lấy dữ liệu Top món ăn tương ứng trong khoảng thời gian chọn + Đồng bộ ảnh món từ menu_items
-    const [{ data: orderItems }, { data: menuItems }] = await Promise.all([
-      supabase.from('order_items').select('name_snapshot, quantity, created_at').gte('created_at', startIso).lte('created_at', endIso).limit(2000),
-      supabase.from('menu_items').select('name, image_url')
-    ])
-
-    const menuImgMap = new Map<string, string | null>()
-    for (const m of menuItems ?? []) {
-      menuImgMap.set(m.name, m.image_url)
+    if (request === dashboardVersion.current) setTopItems(paidSales(paidOrders).slice(0,5).map(item => ({...item,imageUrl:item.menu_item_id ? images.get(item.menu_item_id) : null})))
+    } catch (error) {
+      if (request === dashboardVersion.current) {
+        setTotalRevenue(null)
+        toast.error((error as {message?:string}).message ?? 'Không tải được báo cáo')
+      }
     }
-
-    const itemMap = new Map<string, number>()
-    for (const item of orderItems ?? []) {
-      itemMap.set(item.name_snapshot, (itemMap.get(item.name_snapshot) ?? 0) + item.quantity)
-    }
-
-    const sortedItems = [...itemMap.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([name, qty]) => ({
-        name,
-        qty,
-        imageUrl: menuImgMap.get(name) // Gắn link ảnh đồng bộ từ Menu Quản lý
-      }))
-    setTopItems(sortedItems)
-  }
+  }, [currentAnchorDate,viewMode])
 
   // Hàm quét chấm công tìm nhân viên đang hoạt động trực tuyến (Online hôm nay)
-  const loadOnlineStaff = async () => {
+  const staffVersion = useRef(0)
+  const invalidatestaffVersion = useCallback(() => { staffVersion.current++ }, [])
+  const loadOnlineStaff = useCallback(async () => {
+    const request = ++staffVersion.current
     setLoadingStaff(true)
     try {
-      const { data: ps } = await supabase.from('profiles').select('id, full_name, username').order('full_name')
-      const { data: rs } = await supabase.from('user_roles').select('user_id, role')
+      const { data: ps, error: psError } = await supabase.from('profiles').select('id, full_name, username').order('full_name')
+      const { data: rs, error: rsError } = await supabase.from('user_roles').select('user_id, role')
 
+      if (psError || rsError) throw psError ?? rsError
       const roleMap = new Map((rs ?? []).map(r => [r.user_id, r.role]))
       const profilesList = (ps ?? []).map(p => ({
         ...p,
         role: roleMap.get(p.id) ?? 'staff'
       }))
 
-      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
-      const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
+      const { start: todayStart, end: todayEnd } = vietnamDayRange()
 
-      const { data: todayLogs } = await supabase
-        .from('attendance_logs')
-        .select('*')
-        .gte('at', todayStart.toISOString())
-        .lte('at', todayEnd.toISOString())
-        .order('at', { ascending: true })
-
-      const logs = todayLogs ?? []
+      const logs = await readPages((offset,last) => supabase.from('attendance_logs').select('*')
+        .gte('at',todayStart).lt('at',todayEnd).order('at').order('id').range(offset,last))
       const staffStatusMap = new Map<string, { lastKind: 'in' | 'out'; at: string }>()
 
       for (const log of logs) {
@@ -299,41 +199,50 @@ export default function AdminDashboard() {
         }
       })
 
-      setOnlineStaff(activeStaffList)
+      if (request === staffVersion.current) setOnlineStaff(activeStaffList)
     } catch (error) {
       console.error('Lỗi quét ca nhân viên:', error)
     } finally {
-      setLoadingStaff(false)
+      if (request === staffVersion.current) setLoadingStaff(false)
     }
-  }
-
-  useEffect(() => {
-    loadDashboardData()
-  }, [viewMode, currentAnchorDate])
-
-  useEffect(() => {
-    loadOnlineStaff()
-   supabase.from('ingredients').select('name, stock, unit, min_stock')
-  .then(({ data }) => {
-    setLowStockItems((data ?? []).filter(r => r.stock < r.min_stock))
-  })
-
-supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id')
-  .eq('status', 'empty')
-  .is('merged_group_id', null)
-  .not('area_id', 'is', null)
-  .then(({ data }) => {
-    setEmptyTableCount((data ?? []).length)
-  })
   }, [])
 
-  const avgTicket = totalOrders ? totalRevenue / totalOrders : 0
+  useEffect(() => {
+    void loadDashboardData()
+    const stop = subscribeOrderChanges(() => { void loadDashboardData() })
+    return () => { invalidatedashboardVersion(); stop() }
+  }, [loadDashboardData,invalidatedashboardVersion])
+
+  useEffect(() => {
+    let active = true, version = 0
+    const counts = async () => {
+      const request = ++version
+      const [ingredients,tables] = await Promise.all([
+        supabase.from('ingredients').select('name,stock,unit,min_stock'),
+        supabase.from('restaurant_tables').select('id',{count:'exact',head:true}).eq('status','empty').is('merged_group_id',null).not('area_id','is',null),
+      ])
+      if (!active || request !== version || ingredients.error || tables.error) return
+      setLowStockItems((ingredients.data ?? []).filter(row => row.stock<row.min_stock)); setEmptyTableCount(tables.count ?? 0)
+    }
+    const refreshCounts = () => { void counts().catch(console.error) }
+    const refreshStaff = () => { void loadOnlineStaff() }
+    refreshCounts(); refreshStaff()
+    const stopTables = subscribeTableChanges(refreshCounts)
+    const channel = supabase.channel(`dashboard-${crypto.randomUUID()}`)
+      .on('postgres_changes',{event:'*',schema:'public',table:'ingredients'},refreshCounts)
+      .on('postgres_changes',{event:'*',schema:'public',table:'attendance_logs'},refreshStaff)
+      .subscribe(status => { if (status==='SUBSCRIBED') { refreshCounts(); refreshStaff() } })
+    window.addEventListener('focus',refreshStaff)
+    const timer = setInterval(refreshStaff,60000)
+    return () => { active=false; version++; invalidatestaffVersion(); stopTables(); clearInterval(timer); window.removeEventListener('focus',refreshStaff); void supabase.removeChannel(channel) }
+  }, [loadOnlineStaff,invalidatestaffVersion])
+
+  const avgTicket = totalRevenue === null ? null : totalOrders ? totalRevenue / totalOrders : 0
 
   // Hàm tính tổng số lượng món bán ra của top 5 để quy đổi phần trăm (%) trên nhãn biểu đồ
-  const totalTopQty = topItems.reduce((acc, current) => acc + current.qty, 0)
 
   // Custom nhãn hiển thị % trực tiếp lên trên lát cắt của biểu đồ tròn
-  const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+  const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: {cx:number;cy:number;midAngle:number;innerRadius:number;outerRadius:number;percent:number}) => {
     const radius = innerRadius + (outerRadius - innerRadius) * 0.5
     const RADIAN = Math.PI / 180
     const x = cx + radius * Math.cos(-midAngle * RADIAN)
@@ -355,7 +264,7 @@ supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id'
         <div>
           <h1 className="text-3xl font-black tracking-tight">Bảng điều khiển</h1>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
-            <CalendarDays className="h-4 w-4" /> Hôm nay: {format(new Date(), 'dd/MM/yyyy')}
+            <CalendarDays className="h-4 w-4" /> Hôm nay: {new Date().toLocaleDateString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh'})}
           </p>
         </div>
 
@@ -395,9 +304,9 @@ supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id'
           <KpiCard
             icon={<Receipt className="h-5 w-5" />}
             label="Doanh thu"
-            value={formatVND(totalRevenue)}
+            value={totalRevenue === null ? '—' : formatVND(totalRevenue)}
             accent="bg-gradient-to-br from-primary/15 to-primary/5 border-primary/20 hover:scale-[1.02] transition-transform cursor-pointer"
-            footer={<span className="text-xs text-muted-foreground">Tổng thu hóa đơn thành công</span>}
+            footer={<span className="text-xs text-muted-foreground">{legacyInvoiceCount ? `Có ${legacyInvoiceCount} hóa đơn cũ: dùng số tiền gốc đã lưu` : 'Tổng thu hóa đơn thành công'}</span>}
           />
         </NavLink>
         <NavLink to="/admin/tables">
@@ -406,7 +315,7 @@ supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id'
             label="Số lượng Bàn"
             value={`${totalOrders} bàn`}
             accent="bg-gradient-to-br from-orange-500/15 to-orange-500/5 border-orange-500/20 hover:scale-[1.02] transition-transform cursor-pointer"
-            footer={<span className="text-xs text-muted-foreground">Trung bình {totalOrders ? formatVND(avgTicket) : '0đ'}/bàn</span>}
+            footer={<span className="text-xs text-muted-foreground">Trung bình {totalOrders ? avgTicket === null ? '—' : formatVND(avgTicket) : '0đ'}/bàn</span>}
           />
         </NavLink>
         <NavLink to="/admin/catalog?tab=inventory">
@@ -447,10 +356,10 @@ supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id'
           <div className="mb-4 flex items-end justify-between">
             <div>
               <h2 className="text-lg font-bold">Biến động doanh thu chi tiết</h2>
-              <p className="text-xs text-muted-foreground">Phân tích theo mốc thời gian đang hiển thị</p>
+              <p className="text-xs text-muted-foreground">{legacyInvoiceCount ? 'Hóa đơn cũ dùng số tiền gốc; không tính lại VAT, phí hoặc giảm giá.' : 'Phân tích theo mốc thời gian đang hiển thị'}</p>
             </div>
             <div className="text-right">
-              <div className="text-2xl font-black text-primary">{formatVND(totalRevenue)}</div>
+              <div className="text-2xl font-black text-primary">{totalRevenue === null ? '—' : formatVND(totalRevenue)}</div>
               <div className="text-xs text-muted-foreground">{totalOrders} hóa đơn</div>
             </div>
           </div>
@@ -473,7 +382,7 @@ supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id'
                   borderRadius: 12,
                   boxShadow: '0 10px 30px -10px hsl(var(--primary) / 0.25)',
                 }}
-                formatter={(v: any) => [formatVND(Number(v)), 'Doanh thu']}
+                formatter={(v) => [formatVND(Number(v)), 'Doanh thu']}
                 labelFormatter={(l) => `${l}`}
               />
               <Area type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={3}
@@ -606,7 +515,7 @@ supabase.from('restaurant_tables').select('id, status, merged_group_id, area_id'
                 >
                   {topItems.map((_, i) => <Cell key={i} fill={PIE_COLORS[i]} />)}
                 </Pie>
-                <Tooltip formatter={(v: any) => [`${v} suất`, 'Số lượng']} />
+                <Tooltip formatter={(v) => [`${v} suất`, 'Số lượng']} />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: '12px' }} />
               </PieChart>
             </ResponsiveContainer>

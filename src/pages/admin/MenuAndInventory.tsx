@@ -1,22 +1,28 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { useSearchParams } from 'react-router-dom'
-import { useMenu } from '@/hooks/useMenu'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Trash2, Plus, PackagePlus } from 'lucide-react'
-import { toast } from 'sonner'
-import { formatVND } from '@/hooks/useGlobalCounts'
-import { ImageUpload } from '@/components/ImageUpload'
+import { ImageUpload } from '@/components/ImageUpload';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Dialog,DialogContent,DialogFooter,DialogHeader,DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Tabs,TabsContent,TabsList,TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { useMenu } from '@/hooks/useMenu';
+import { supabase } from '@/integrations/supabase/client';
+import type { Tables } from '@/integrations/supabase/types';
+import type { Ingredient,Recipe } from '@/lib/domainTypes';
+import { formatVND } from '@/lib/formatVND';
+import { decimalInput,optionalText,requiredText } from '@/lib/inputValidation';
+import { stockTransaction } from '@/lib/inventoryTransactions';
+import { readableError } from '@/lib/restaurantTransactions';
+import { PackagePlus,Plus,Trash2 } from 'lucide-react';
+import { useCallback,useEffect,useRef,useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { toast } from 'sonner';
+type MenuForm = Omit<Tables<'menu_items'>,'id'|'created_at'|'price'> & {id?:string;price:number|string}
 
 interface Ing { id: string; name: string; unit: string; stock: number; min_stock: number }
 
@@ -26,34 +32,51 @@ interface Ing { id: string; name: string; unit: string; stock: number; min_stock
 function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }) {
   const [rows, setRows] = useState<Ing[]>([])
   const [open, setOpen] = useState(false)
-  const [edit, setEdit] = useState<Partial<Ing>>({ name: '', unit: 'g', stock: 0, min_stock: 0 })
+  const [edit, setEdit] = useState<{ id?: string; name?: string; unit?: string; stock?: number | string; min_stock?: number | string; expected_stock?: number }>({ name: '', unit: 'g', stock: 0, min_stock: 0 })
   const [stockOpen, setStockOpen] = useState<Ing | null>(null)
-  const [delta, setDelta] = useState(0)
+  const [delta, setDelta] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [expectedIngredient, setExpectedIngredient] = useState<Ing | null>(null)
 
-  const load = async () => {
-  const { data } = await supabase.from('ingredients').select('*').order('name')
+  const load = useCallback(async () => {
+  const { data, error } = await supabase.from('ingredients').select('*').order('name')
+  if (error) { toast.error(error.message); return }
   const result = (data ?? []) as Ing[]
   setRows(result)
-  onRowsChange?.(result)  // ← thêm dòng này
-}
-  useEffect(() => { load() }, [])
+  onRowsChange?.(result)
+}, [onRowsChange])
+  useEffect(() => {
+    void load()
+    const channel = supabase.channel(`inventory-editor-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ingredients' }, () => { void load() }).subscribe()
+    const refresh = () => { void load() }
+    window.addEventListener('inventory-changed', refresh)
+    return () => { window.removeEventListener('inventory-changed', refresh); void supabase.removeChannel(channel) }
+  }, [load])
 
   const save = async () => {
-    if (!edit.name) return
-    if (edit.id) await supabase.from('ingredients').update(edit).eq('id', edit.id)
-    else await supabase.from('ingredients').insert(edit as any)
-    setOpen(false); setEdit({ name: '', unit: 'g', stock: 0, min_stock: 0 }); load(); toast.success('Đã lưu')
+    if (saving) return
+    setSaving(true)
+    try {
+      const data = { name: requiredText(edit.name, 'Tên'), unit: requiredText(edit.unit, 'Đơn vị', 32),
+        stock: decimalInput(edit.stock, 'Tồn kho'), min_stock: decimalInput(edit.min_stock, 'Tồn tối thiểu'), expected_stock: edit.expected_stock,
+        expected: expectedIngredient ? { ...expectedIngredient } : null }
+      await stockTransaction(edit.id ? 'edit' : 'create', edit.id ?? null, data)
+      setOpen(false); setEdit({ name: '', unit: 'g', stock: 0, min_stock: 0 }); await load(); toast.success('Đã lưu')
+    } catch (error) { toast.error(readableError(error)); await load() } finally { setSaving(false) }
   }
   const del = async (id: string) => {
     if (!confirm('Xóa nguyên liệu này?')) return
-    await supabase.from('ingredients').delete().eq('id', id); load()
+    try { await stockTransaction('delete', id, {}); await load() } catch (error) { toast.error(readableError(error)) }
   }
   const addStock = async () => {
-    if (!stockOpen || !delta) return
-    await supabase.from('ingredients').update({ stock: Number(stockOpen.stock) + Number(delta) }).eq('id', stockOpen.id)
-    await supabase.from('stock_movements').insert({ ingredient_id: stockOpen.id, delta, reason: 'Nhập kho' })
-    setStockOpen(null); setDelta(0); load(); toast.success('Đã nhập kho')
-    window.dispatchEvent(new Event('table-status-changed-local'))
+    if (!stockOpen || saving) return
+    setSaving(true)
+    try {
+      const amount = decimalInput(delta, 'Số lượng nhập', 3, 99999999999.999, true)
+      await stockTransaction('adjust', stockOpen.id, { delta: amount, reason: 'Nhập kho' })
+      setStockOpen(null); setDelta(''); await load(); toast.success('Đã nhập kho')
+    } catch (error) { toast.error(readableError(error)) } finally { setSaving(false) }
   }
 
   return (
@@ -74,7 +97,7 @@ function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }
             </div>
             <div className="mt-3 flex gap-2">
               <Button size="sm" variant="outline" onClick={() => setStockOpen(r)}><PackagePlus className="mr-1 h-3 w-3"/>Nhập</Button>
-              <Button size="sm" variant="outline" onClick={() => { setEdit(r); setOpen(true) }}>Sửa</Button>
+              <Button size="sm" variant="outline" onClick={() => { setExpectedIngredient(r); setEdit({ ...r, expected_stock: r.stock }); setOpen(true) }}>Sửa</Button>
               <Button size="sm" variant="ghost" onClick={() => del(r.id)}><Trash2 className="h-3 w-3 text-destructive"/></Button>
             </div>
           </Card>
@@ -88,19 +111,19 @@ function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }
             <div><Label>Tên</Label><Input value={edit.name ?? ''} onChange={(e) => setEdit({ ...edit, name: e.target.value })}/></div>
             <div className="grid grid-cols-3 gap-2">
               <div><Label>Đơn vị</Label><Input value={edit.unit ?? 'g'} onChange={(e) => setEdit({ ...edit, unit: e.target.value })}/></div>
-              <div><Label>Tồn</Label><Input type="number" value={edit.stock || ''} placeholder="0" onChange={(e) => setEdit({ ...edit, stock: Number(e.target.value) })}/></div>
-              <div><Label>Min</Label><Input type="number" value={edit.min_stock || ''} placeholder="0" onChange={(e) => setEdit({ ...edit, min_stock: Number(e.target.value) })}/></div>
+              <div><Label>Tồn</Label><Input type="number" min="0" step="0.001" value={edit.stock ?? ''} placeholder="0" onChange={(e) => setEdit({ ...edit, stock: e.target.value })}/></div>
+              <div><Label>Min</Label><Input type="number" min="0" step="0.001" value={edit.min_stock ?? ''} placeholder="0" onChange={(e) => setEdit({ ...edit, min_stock: e.target.value })}/></div>
             </div>
           </div>
-          <DialogFooter><Button onClick={save}>Lưu</Button></DialogFooter>
+          <DialogFooter><Button disabled={saving} onClick={save}>Lưu</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog open={!!stockOpen} onOpenChange={(o) => !o && setStockOpen(null)}>
         <DialogContent>
           <DialogHeader><DialogTitle>Nhập kho — {stockOpen?.name}</DialogTitle></DialogHeader>
-          <div><Label>Số lượng nhập ({stockOpen?.unit})</Label><Input type="number" value={delta || ''} placeholder="0" onChange={(e) => setDelta(Number(e.target.value))}/></div>
-          <DialogFooter><Button onClick={addStock}>Xác nhận</Button></DialogFooter>
+          <div><Label>Số lượng nhập ({stockOpen?.unit})</Label><Input type="number" min="0.001" step="0.001" value={delta} placeholder="0" onChange={(e) => setDelta(e.target.value)}/></div>
+          <DialogFooter><Button disabled={saving} onClick={addStock}>Xác nhận</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
@@ -113,31 +136,37 @@ function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }
 function MenuTab() {
   const { items, categories, reload } = useMenu()
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState<any>({ name: '', price: '', category_id: null, is_available: true, is_default: false, no_cook: false, image_url: '', recipe: '' })
+  const [form, setForm] = useState<MenuForm>({ name: '', price: '', category_id: null, is_available: true, is_default: false, no_cook: false, image_url: '', recipe: '' })
   const [catOpen, setCatOpen] = useState(false)
   const [catName, setCatName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [expected, setExpected] = useState<Record<string, string | number | boolean | null> | null>(null)
 
   const save = async () => {
-    if (!form.name.trim() || form.price === '') return toast.error('Vui lòng nhập đầy đủ Tên và Giá!')
-    const payload = { ...form, price: Number(form.price), image_url: form.image_url || null }
+    if (saving) return
+    setSaving(true)
     try {
-      let error
-      if (form.id) { const { error: err } = await supabase.from('menu_items').update(payload).eq('id', form.id); error = err }
-      else { const { error: err } = await supabase.from('menu_items').insert(payload); error = err }
+      const payload = { name: requiredText(form.name, 'Tên món'), price: decimalInput(form.price, 'Giá món', 2, 9999999999.99),
+        image_url: optionalText(form.image_url, 'URL ảnh', 2048) || null, category_id: form.category_id, is_available: form.is_available,
+        is_default: form.is_default, no_cook: form.no_cook, recipe: optionalText(form.recipe, 'Ghi chú chế biến') || null }
+      const { error } = await supabase.rpc('restaurant_menu', { p_id: form.id ?? null, p_data: payload, p_expected: expected })
       if (error) return toast.error(error.message)
       setOpen(false)
       setForm({ name: '', price: '', category_id: categories[0]?.id ?? null, is_available: true, is_default: false, no_cook: false, image_url: '', recipe: '' })
       reload(); toast.success('Đã lưu')
-    } catch (err: any) { toast.error(err.message) }
+    } catch (err) { toast.error(readableError(err)) } finally { setSaving(false) }
   }
 
   const del = async (id: string) => {
     if (!confirm('Xóa món này?')) return
-    await supabase.from('menu_items').delete().eq('id', id); reload(); toast.success('Đã xóa')
+    const { error } = await supabase.from('menu_items').delete().eq('id', id)
+    if (error) return toast.error(error.message)
+    reload(); toast.success('Đã xóa')
   }
   const addCat = async () => {
-    if (!catName.trim()) return
-    const { error } = await supabase.from('categories').insert({ name: catName.trim(), sort_order: categories.length + 1 })
+    let name: string
+    try { name = requiredText(catName, 'Tên danh mục') } catch (error) { return toast.error(readableError(error)) }
+    const { error } = await supabase.from('categories').insert({ name, sort_order: categories.length + 1 })
     if (error) return toast.error(error.message)
     setCatName(''); reload(); toast.success('Đã thêm danh mục')
   }
@@ -163,7 +192,7 @@ function MenuTab() {
         {items.map(it => (
           <Card key={it.id} className="overflow-hidden">
             <div className="aspect-square w-full overflow-hidden bg-muted relative">
-              {(it as any).no_cook && <span className="absolute top-2 right-2 bg-blue-600 text-white font-bold text-[10px] px-2 py-0.5 rounded-md shadow-sm z-10 animate-pulse">có sẵn</span>}
+              {it.no_cook && <span className="absolute top-2 right-2 bg-blue-600 text-white font-bold text-[10px] px-2 py-0.5 rounded-md shadow-sm z-10 animate-pulse">có sẵn</span>}
               {it.image_url ? <img src={it.image_url} alt={it.name} className="h-full w-full object-cover" loading="lazy"/> : <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Chưa có ảnh</div>}
             </div>
             <div className="p-3">
@@ -171,7 +200,7 @@ function MenuTab() {
               <div className="text-sm text-primary font-bold">{formatVND(it.price)}</div>
               <div className="mt-1 text-xs text-muted-foreground">{categories.find(c => c.id === it.category_id)?.name ?? '—'}</div>
               <div className="mt-2 flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => { setForm({ ...it, price: it.price === 0 ? '' : it.price, no_cook: !!(it as any).no_cook, recipe: (it as any).recipe || '' }); setOpen(true) }}>Sửa</Button>
+                <Button size="sm" variant="outline" onClick={() => { setExpected({ ...it }); setForm({ ...it, price: it.price, no_cook: !!it.no_cook, recipe: it.recipe || '' }); setOpen(true) }}>Sửa</Button>
                 <Button size="sm" variant="ghost" onClick={() => del(it.id)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
               </div>
             </div>
@@ -186,7 +215,7 @@ function MenuTab() {
             <div className="space-y-3 pr-1 py-1">
               <div><Label>Tên</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}/></div>
               <div className="grid grid-cols-2 gap-2">
-                <div><Label>Giá</Label><Input type="number" value={form.price} placeholder="vd: 50000" onChange={(e) => setForm({ ...form, price: e.target.value === '' ? '' : Number(e.target.value) })}/></div>
+                <div><Label>Giá</Label><Input type="number" min="0" step="0.01" value={form.price} placeholder="vd: 50000" onChange={(e) => setForm({ ...form, price: e.target.value })}/></div>
                 <div><Label>Danh mục</Label>
                   <Select value={form.category_id ?? ''} onValueChange={(v) => setForm({ ...form, category_id: v })}>
                     <SelectTrigger><SelectValue/></SelectTrigger>
@@ -199,7 +228,7 @@ function MenuTab() {
               <div className="flex items-center justify-between"><Label>Mặc định</Label><Switch checked={form.is_default} onCheckedChange={(v) => setForm({ ...form, is_default: v })}/></div>
               <div className="flex items-center justify-between border-t pt-3">
                 <div><Label>Không cần chế biến</Label><p className="text-[11px] text-muted-foreground">Không bắn lệnh xuống bếp</p></div>
-                <Switch checked={form.no_cook} onCheckedChange={(v) => setForm({ ...form, no_cook: v })}/>
+                <Switch checked={!!form.no_cook} onCheckedChange={(v) => setForm({ ...form, no_cook: v })}/>
               </div>
               <div className="space-y-1 border-t pt-3">
                 <Label>Công thức / Ghi chú chế biến</Label>
@@ -207,7 +236,7 @@ function MenuTab() {
               </div>
             </div>
           </ScrollArea>
-          <DialogFooter className="p-6 pt-2 border-t shrink-0"><Button onClick={save} className="w-full sm:w-auto">Lưu</Button></DialogFooter>
+          <DialogFooter className="p-6 pt-2 border-t shrink-0"><Button disabled={saving} onClick={save} className="w-full sm:w-auto">Lưu</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -243,37 +272,52 @@ function MenuTab() {
 // ─────────────────────────────────────────────
 function RecipesTab() {
   const { items } = useMenu()
-  const [ings, setIngs] = useState<any[]>([])
+  const [ings, setIngs] = useState<Ingredient[]>([])
   const [sel, setSel] = useState<string | null>(null)
-  const [recipe, setRecipe] = useState<any[]>([])
-  const [newIng, setNewIng] = useState<{ ing: string; qty: number }>({ ing: '', qty: 0 })
+  const [recipe, setRecipe] = useState<Recipe[]>([])
+  const [newIng, setNewIng] = useState({ ing: '', qty: '' })
+  const expectedRecipe = () => recipe.map(r => ({ ingredient_id: r.ingredient_id, quantity: r.quantity })).sort((a, b) => (a.ingredient_id ?? '').localeCompare(b.ingredient_id ?? ''))
 
   useEffect(() => {
     supabase.from('ingredients').select('*').order('name').then(({ data }) => setIngs(data ?? []))
   }, [])
 
+  const recipeVersion = useRef(0)
+  const invalidaterecipeVersion = useCallback(() => { recipeVersion.current++ }, [])
+  const selectedRecipe = useRef(sel)
+  selectedRecipe.current = sel
   const loadRecipe = async (menuItemId: string) => {
-    const { data } = await supabase.from('recipes').select('*, ingredients(name,unit)').eq('menu_item_id', menuItemId)
+    const version = ++recipeVersion.current
+    const { data, error } = await supabase.from('recipes').select('*, ingredients(name,unit)').eq('menu_item_id', menuItemId)
+    if (version !== recipeVersion.current || selectedRecipe.current !== menuItemId) return
+    if (error) return toast.error(error.message)
     setRecipe(data ?? [])
   }
-  useEffect(() => { if (!sel) { setRecipe([]); return }; loadRecipe(sel) }, [sel])
+  useEffect(() => { setRecipe([]); if (sel) void loadRecipe(sel); return () => { invalidaterecipeVersion() } }, [sel,invalidaterecipeVersion])
 
   const add = async () => {
     if (!sel || !newIng.ing || !newIng.qty) return toast.error('Chọn nguyên liệu và nhập số lượng')
     if (recipe.some(r => r.ingredient_id === newIng.ing)) return toast.error('Nguyên liệu này đã có trong công thức.')
-    const { error } = await supabase.from('recipes').insert({ menu_item_id: sel, ingredient_id: newIng.ing, quantity: newIng.qty })
+    let quantity: number
+    try { quantity = decimalInput(newIng.qty, 'Định mức', 3, 99999999999.999, true) } catch (error) { return toast.error(readableError(error)) }
+    const { error } = await supabase.rpc('restaurant_recipe', { p_action: 'add', p_menu: sel, p_rows: [{ ingredient_id: newIng.ing, quantity }], p_expected: expectedRecipe() })
     if (error) return toast.error(error.message)
-    toast.success('Đã thêm'); setNewIng({ ing: '', qty: 0 }); loadRecipe(sel)
+    toast.success('Đã thêm'); setNewIng({ ing: '', qty: '' }); loadRecipe(sel)
   }
   const del = async (id: string) => {
     if (!confirm('Xóa nguyên liệu này khỏi công thức?')) return
-    const { error } = await supabase.from('recipes').delete().eq('id', id)
+    const row = recipe.find(r => r.id === id)
+    if (!sel || !row) return
+    const { error } = await supabase.rpc('restaurant_recipe', { p_action: 'delete', p_menu: sel, p_rows: [{ ingredient_id: row.ingredient_id }], p_expected: expectedRecipe() })
     if (error) return toast.error(error.message)
     toast.success('Đã xóa'); if (sel) loadRecipe(sel)
   }
-  const updateQty = async (id: string, qty: number) => {
-    if (!qty || qty <= 0) return
-    const { error } = await supabase.from('recipes').update({ quantity: qty }).eq('id', id)
+  const updateQty = async (id: string, raw: string) => {
+    const row = recipe.find(r => r.id === id)
+    if (!sel || !row || raw === String(row.quantity)) return
+    let qty: number
+    try { qty = decimalInput(raw, 'Định mức', 3, 99999999999.999, true) } catch (error) { return toast.error(readableError(error)) }
+    const { error } = await supabase.rpc('restaurant_recipe', { p_action: 'update', p_menu: sel, p_rows: [{ ingredient_id: row.ingredient_id, quantity: qty }], p_expected: expectedRecipe() })
     if (error) return toast.error(error.message)
     toast.success('Đã cập nhật'); if (sel) loadRecipe(sel)
   }
@@ -300,7 +344,7 @@ function RecipesTab() {
               {recipe.map(r => (
                 <div key={r.id} className="flex items-center gap-2 rounded border p-2">
                   <span className="flex-1 text-sm font-medium">{r.ingredients?.name}</span>
-                  <Input type="number" className="w-24 h-8 text-sm" defaultValue={r.quantity} onBlur={(e) => updateQty(r.id, Number(e.target.value))}/>
+                  <Input key={`${r.id}:${r.quantity}`} type="number" min="0.001" step="0.001" className="w-24 h-8 text-sm" defaultValue={r.quantity} onBlur={(e) => updateQty(r.id, e.target.value)}/>
                   <span className="text-xs text-muted-foreground w-8">{r.ingredients?.unit}</span>
                   <Button size="icon" variant="ghost" onClick={() => del(r.id)}><Trash2 className="h-4 w-4 text-destructive"/></Button>
                 </div>
@@ -313,7 +357,7 @@ function RecipesTab() {
                   <SelectContent>{ings.map(i => <SelectItem key={i.id} value={i.id}>{i.name} ({i.unit})</SelectItem>)}</SelectContent>
                 </Select>
               </div>
-              <Input type="number" className="w-28" placeholder="Số lượng" value={newIng.qty || ''} onChange={(e) => setNewIng({ ...newIng, qty: Number(e.target.value) })}/>
+              <Input type="number" min="0.001" step="0.001" className="w-28" placeholder="Số lượng" value={newIng.qty} onChange={(e) => setNewIng({ ...newIng, qty: e.target.value })}/>
               <Button onClick={add}><Plus className="mr-1 h-4 w-4"/>Thêm</Button>
             </div>
           </>

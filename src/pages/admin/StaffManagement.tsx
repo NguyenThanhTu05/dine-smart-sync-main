@@ -1,17 +1,24 @@
-import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Badge } from '@/components/ui/badge'
-import { Plus, Trash2, Key, MapPin, Crosshair, Loader2, Download } from 'lucide-react'
-import { toast } from 'sonner'
-import { ROLE_LABEL } from '@/lib/roles'
-import { format, startOfMonth } from 'date-fns'
-import { getCurrentPosition } from '@/lib/geo'
+import { readPages } from '../../../supabase/functions/_shared/readPages'
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Dialog,DialogContent,DialogFooter,DialogHeader,DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select,SelectContent,SelectItem,SelectTrigger,SelectValue } from '@/components/ui/select';
+import { supabase } from '@/integrations/supabase/client';
+import { csvRow } from '@/lib/csv';
+import type { AttendanceLog,Profile,StaffProfile } from '@/lib/domainTypes';
+import { errorMessage } from '@/lib/errors';
+import { accountCreatedResponse, accountResponse } from '@/lib/functionResponses';
+import { getCurrentPosition } from '@/lib/geo';
+import { coordinateInput,dateInput,decimalInput,optionalText,passwordInput,phoneInput,requiredText,usernameInput } from '@/lib/inputValidation';
+import { ROLE_LABEL } from '@/lib/roles';
+import { Crosshair,Download,Key,Loader2,MapPin,Plus,Trash2 } from 'lucide-react';
+import { useCallback,useEffect,useMemo,useRef,useState } from 'react';
+import { toast } from 'sonner';
+import { vietnamDayKey } from '../../../supabase/functions/_shared/vietnamTime';
+interface AttendanceRow {user_id:string;date:string;inAt?:string;outAt?:string;distIn?:number|null;distOut?:number|null}
 
 type Tab = 'staff' | 'location' | 'attendance'
 
@@ -44,15 +51,15 @@ export default function StaffManagement() {
 
 /* ========== TAB NHÂN SỰ ========== */
 function StaffTab() {
-  const [rows, setRows] = useState<any[]>([])
+  const [rows, setRows] = useState<StaffProfile[]>([])
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ username: '', password: '', full_name: '', role: 'staff', phone: '', address: '', birthday: '' })
   const [show, setShow] = useState<Record<string, boolean>>({})
-  const [pwOpen, setPwOpen] = useState<any>(null)
+  const [pwOpen, setPwOpen] = useState<StaffProfile | null>(null)
   const [newPw, setNewPw] = useState('')
 
   const load = async () => {
-    const { data: profiles } = await supabase.from('profiles').select('*').order('full_name')
+    const { data: profiles } = await supabase.from('profiles').select('id,username,full_name,phone,address,birthday,avatar_url,hire_date,hide_personal,created_at').order('full_name')
     const { data: roles } = await supabase.from('user_roles').select('user_id,role')
     const byUid = new Map((roles ?? []).map(r => [r.user_id, r.role]))
     setRows((profiles ?? []).map(p => ({ ...p, role: byUid.get(p.id) ?? 'staff' })))
@@ -60,23 +67,29 @@ function StaffTab() {
   useEffect(() => { load() }, [])
 
   const create = async () => {
-    if (!form.username || !form.password || !form.full_name) return toast.error('Thiếu thông tin')
-    const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'create_user', ...form } })
-    if (error || (data as any)?.error) return toast.error((data as any)?.error ?? error?.message)
+    let clean
+    try { clean = { ...form, username: usernameInput(form.username), password: passwordInput(form.password), full_name: requiredText(form.full_name, 'Họ tên'),
+      phone: phoneInput(form.phone), birthday: dateInput(form.birthday, 'Ngày sinh', false), address: optionalText(form.address, 'Địa chỉ') } }
+    catch (error) { return toast.error((error as Error).message) }
+    const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'create_user', ...clean } })
+    const parsed = accountCreatedResponse.safeParse(data)
+    if (error || !parsed.success || parsed.data.error || !parsed.data.ok) return toast.error(error?.message ?? (parsed.success ? parsed.data.error : undefined) ?? 'Thao tác tài khoản chưa thành công')
     toast.success('Đã tạo'); setOpen(false); load()
     setForm({ username: '', password: '', full_name: '', role: 'staff', phone: '', address: '', birthday: '' })
   }
   const del = async (id: string) => {
     if (!confirm('Xóa tài khoản này?')) return
     const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'delete_user', user_id: id } })
-    if (error || (data as any)?.error) return toast.error((data as any)?.error ?? error?.message)
+    const parsed = accountResponse.safeParse(data)
+    if (error || !parsed.success || parsed.data.error || !parsed.data.ok) return toast.error(error?.message ?? (parsed.success ? parsed.data.error : undefined) ?? 'Thao tác tài khoản chưa thành công')
     toast.success('Đã xóa'); load()
   }
   const updatePw = async () => {
-    if (newPw.length < 6) return toast.error('Mật khẩu phải có ít nhất 6 ký tự')
+    if (!pwOpen) return
+    try { passwordInput(newPw) } catch (error) { return toast.error((error as Error).message) }
     const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'update_password', user_id: pwOpen.id, password: newPw } })
-    if (error || (data as any)?.error) return toast.error((data as any)?.error ?? error?.message)
-    await supabase.from('profiles').update({ visible_password: newPw }).eq('id', pwOpen.id)
+    const parsed = accountResponse.safeParse(data)
+    if (error || !parsed.success || parsed.data.error || !parsed.data.ok) return toast.error(error?.message ?? (parsed.success ? parsed.data.error : undefined) ?? 'Thao tác tài khoản chưa thành công')
     toast.success('Đã đổi mật khẩu'); setPwOpen(null); setNewPw(''); load()
   }
   return (
@@ -97,7 +110,7 @@ function StaffTab() {
             </div>
             <div className="mt-2 flex items-center gap-2 text-sm">
               <Key className="h-3 w-3 text-muted-foreground" />
-              <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-xs">{show[r.id] ? r.visible_password : '••••••••'}</span>
+              <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-xs">{show[r.id] ? 'Không lưu mật khẩu' : '••••••••'}</span>
               <Button size="icon" variant="ghost" className="h-7 w-7 text-base hover:bg-transparent hover:scale-125 transition-transform duration-200 select-none"
                 onClick={() => setShow(s => ({ ...s, [r.id]: !s[r.id] }))}>
                 {show[r.id] ? '😳' : '🫣'}
@@ -164,18 +177,21 @@ function LocationTab() {
       const position = await getCurrentPosition()
       setForm(f => ({ ...f, latitude: String(position.coords.latitude), longitude: String(position.coords.longitude) }))
       toast.success('Đã lấy vị trí hiện tại')
-    } catch (e: any) {
-      toast.error(e.message ?? 'Không lấy được vị trí')
+    } catch (e: unknown) {
+      toast.error(errorMessage(e) ?? 'Không lấy được vị trí')
     } finally {
       setLoading(false)
     }
   }
 
   const save = async () => {
+    let latitude: number, longitude: number, radius: number
+    try { latitude = coordinateInput(form.latitude, 'Vĩ độ', 90); longitude = coordinateInput(form.longitude, 'Kinh độ', 180); radius = decimalInput(form.radius_m, 'Bán kính', 3, 99999999999.999, true) }
+    catch (error) { return toast.error((error as Error).message) }
     const { error } = await supabase.from('attendance_settings').update({
-  latitude: Number(form.latitude),
-  longitude: Number(form.longitude),
-  radius_m: Number(form.radius_m),
+  latitude,
+  longitude,
+  radius_m: radius,
   updated_at: new Date().toISOString()
 }).eq('id', 1)
     if (error) toast.error(error.message); else toast.success('Đã lưu')
@@ -207,29 +223,38 @@ function LocationTab() {
 
 /* ========== TAB CHẤM CÔNG ========== */
 function AttendanceTab() {
-  const [profiles, setProfiles] = useState<any[]>([])
-  const [logs, setLogs] = useState<any[]>([])
-  const [from, setFrom] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'))
-  const [to, setTo] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [profiles, setProfiles] = useState<(Pick<Profile,'id'|'full_name'|'username'> & {role:string})[]>([])
+  const [logs, setLogs] = useState<AttendanceLog[]>([])
+  const [from, setFrom] = useState(vietnamDayKey().slice(0,7) + '-01')
+  const [to, setTo] = useState(vietnamDayKey())
   const [userFilter, setUserFilter] = useState('all')
 
-  const load = async () => {
-    const { data: ps } = await supabase.from('profiles').select('id,full_name,username').order('full_name')
-    const { data: rs } = await supabase.from('user_roles').select('user_id,role')
-    const byUid = new Map((rs ?? []).map(r => [r.user_id, r.role]))
-    setProfiles((ps ?? []).map(p => ({ ...p, role: byUid.get(p.id) ?? 'staff' })).filter((p: any) => p.role !== 'admin'))
-    const fromIso = new Date(from + 'T00:00:00').toISOString()
-    const toIso = new Date(to + 'T23:59:59').toISOString()
-    const { data: l } = await supabase.from('attendance_logs').select('*').gte('at', fromIso).lte('at', toIso).order('at')
-    setLogs(l ?? [])
-  }
-  useEffect(() => { load() }, [from, to])
+  const loadVersion = useRef(0)
+  const invalidateLoad = useCallback(() => { loadVersion.current++ }, [])
+  const load = useCallback(async () => {
+    const request = ++loadVersion.current
+    try {
+      const fromIso = new Date(dateInput(from, 'Từ ngày') + 'T00:00:00+07:00').toISOString()
+      const toIso = new Date(new Date(dateInput(to, 'Đến ngày') + 'T00:00:00+07:00').getTime() + 86400000).toISOString()
+      if (fromIso >= toIso) throw new Error('Khoảng ngày không hợp lệ')
+      const [ps, rs, latestLogs] = await Promise.all([
+        readPages((offset,last) => supabase.from('profiles').select('id,full_name,username').order('id').range(offset,last)),
+        readPages((offset,last) => supabase.from('user_roles').select('user_id,role').order('id').range(offset,last)),
+        readPages((offset,last) => supabase.from('attendance_logs').select('*').gte('at',fromIso).lt('at',toIso).order('at').order('id').range(offset,last)),
+      ])
+      if (request !== loadVersion.current) return
+      const byUid = new Map(rs.map(row => [row.user_id,row.role]))
+      setProfiles(ps.map(profile => ({...profile,role:byUid.get(profile.id) ?? 'staff'})).filter(profile => profile.role !== 'admin'))
+      setLogs(latestLogs)
+    } catch (error) { if (request === loadVersion.current) toast.error(errorMessage(error)) }
+  }, [from,to])
+  useEffect(() => { void load(); return invalidateLoad }, [load,invalidateLoad])
 
   const rows = useMemo(() => {
-    const map = new Map<string, any>()
+    const map = new Map<string, AttendanceRow>()
     const filtered = userFilter === 'all' ? logs : logs.filter(l => l.user_id === userFilter)
     for (const l of filtered) {
-      const date = l.at.slice(0, 10)
+      const date = vietnamDayKey(new Date(l.at))
       const key = `${l.user_id}|${date}`
       const r = map.get(key) ?? { user_id: l.user_id, date }
       if (l.kind === 'in') { if (!r.inAt || new Date(l.at) < new Date(r.inAt)) { r.inAt = l.at; r.distIn = l.distance_m } }
@@ -252,12 +277,12 @@ function AttendanceTab() {
     const header = ['Ngày', 'Nhân viên', 'Username', 'Chức vụ', 'Giờ vào', 'Giờ ra', 'Tổng giờ', 'KH IN (m)', 'KH OUT (m)']
     const lines = rows.map(r => {
       const p = profileById(r.user_id)
-      return [r.date, p?.full_name ?? '', p?.username ?? '', ROLE_LABEL[p?.role ?? ''] ?? '',
-        r.inAt ? format(new Date(r.inAt), 'HH:mm:ss') : '', r.outAt ? format(new Date(r.outAt), 'HH:mm:ss') : '',
-        hours(r.inAt, r.outAt), r.distIn ?? '', r.distOut ?? ''].join(',')
+      return csvRow([r.date, p?.full_name ?? '', p?.username ?? '', ROLE_LABEL[p?.role ?? ''] ?? '',
+        r.inAt ? new Date(r.inAt).toLocaleTimeString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh',hour12:false}) : '', r.outAt ? new Date(r.outAt).toLocaleTimeString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh',hour12:false}) : '',
+        hours(r.inAt, r.outAt), r.distIn ?? '', r.distOut ?? ''])
     })
-    const blob = new Blob(['\uFEFF'+[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' })
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `chamcong_${from}_${to}.csv`; a.click()
+    const blob = new Blob(['\uFEFF'+[csvRow(header), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `chamcong_${from}_${to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   }
 
   return (
@@ -299,8 +324,8 @@ function AttendanceTab() {
                   <td>{r.date}</td>
                   <td>{p?.full_name ?? r.user_id.slice(0, 6)}</td>
                   <td><Badge variant="secondary">{ROLE_LABEL[p?.role ?? ''] ?? '—'}</Badge></td>
-                  <td>{r.inAt ? format(new Date(r.inAt), 'HH:mm:ss') : '—'}</td>
-                  <td>{r.outAt ? format(new Date(r.outAt), 'HH:mm:ss') : '—'}</td>
+                  <td>{r.inAt ? new Date(r.inAt).toLocaleTimeString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh',hour12:false}) : '—'}</td>
+                  <td>{r.outAt ? new Date(r.outAt).toLocaleTimeString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh',hour12:false}) : '—'}</td>
                   <td className="font-bold">{hours(r.inAt, r.outAt)}</td>
                   <td>{r.distIn ?? '—'}</td>
                   <td>{r.distOut ?? '—'}</td>

@@ -1,19 +1,21 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Search, User, LayoutGrid, LogOut, Receipt, MapPin, ChefHat, Menu } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react';
+import { ChefHat,LayoutGrid,LogOut,MapPin,Menu,Receipt,User } from 'lucide-react';
+import { NavLink,Outlet,useLocation } from 'react-router-dom';
+interface LayoutTab {to:string;icon:LucideIcon;label:string;badge?:number;end?:boolean}
 
-import { useAuth } from '@/contexts/AuthContext'
-import { NumberBadge, useGlobalCounts } from '@/hooks/useGlobalCounts'
-import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
-import { ROLE_LABEL } from '@/lib/roles'
-import { useState, useEffect } from 'react'
-import { supabase } from '@/integrations/supabase/client'
+import { NumberBadge } from '@/components/NumberBadge';
+import { Button } from '@/components/ui/button';
+import { Sheet,SheetContent,SheetTrigger } from '@/components/ui/sheet';
+import { useAuth } from '@/contexts/authState';
+import { useGlobalCounts } from '@/hooks/useGlobalCounts';
+import { supabase } from '@/integrations/supabase/client';
+import { useEffect,useState } from 'react';
 export default function DesktopLayout({ rolePrefix, title, extraTabs = [] }: {
   rolePrefix: string
   title: string
-  extraTabs?: { to: string; icon: any; label: string; badge?: number }[]
+  extraTabs?: LayoutTab[]
 }) {
-  const { signOut, user, role } = useAuth()
+  const { signOut, user } = useAuth()
   const { tableAlerts, openBills } = useGlobalCounts()
   const loc = useLocation()
   const [open, setOpen] = useState(false)
@@ -23,17 +25,17 @@ export default function DesktopLayout({ rolePrefix, title, extraTabs = [] }: {
     supabase.from('profiles').select('avatar_url').eq('id', user.id).maybeSingle()
       .then(({ data }) => setAvatarUrl(data?.avatar_url ?? null))
   }, [user?.id])
-  
-  const tabs = [
+
+  const tabs: LayoutTab[] = [
     { to: `/${rolePrefix}`, icon: LayoutGrid, label: 'Sơ đồ bàn', badge: tableAlerts, end: true },
     { to: `/${rolePrefix}/bills`, icon: Receipt, label: 'Bill order', badge: openBills },
     { to: `/${rolePrefix}/areas`, icon: MapPin, label: 'Khu vực & Bàn', badge: 0 },
     ...extraTabs,
-    
+
     { to: `/${rolePrefix}/me`, icon: User, label: 'Tôi', badge: 0 },
   ]
-  
-  const isActive = (t: any) => t.end ? loc.pathname === t.to : (loc.pathname === t.to || loc.pathname.startsWith(t.to + '/'))
+
+  const isActive = (t: LayoutTab) => t.end ? loc.pathname === t.to : (loc.pathname === t.to || loc.pathname.startsWith(t.to + '/'))
 
   const SidebarContent = ({ onNav }: { onNav?: () => void }) => (
     <>
@@ -53,10 +55,10 @@ export default function DesktopLayout({ rolePrefix, title, extraTabs = [] }: {
         {tabs.map(t => {
           const active = isActive(t)
           return (
-            <NavLink 
-              key={t.to} 
-              to={t.to} 
-              end={(t as any).end} 
+            <NavLink
+              key={t.to}
+              to={t.to}
+              end={t.end}
               onClick={onNav}
               className={`relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                 active ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
@@ -66,7 +68,7 @@ export default function DesktopLayout({ rolePrefix, title, extraTabs = [] }: {
                 <t.icon className="h-4 w-4"/>
               </div>
               <span className="truncate">{t.label}</span>
-              <NumberBadge n={t.badge ?? 0}/> 
+              <NumberBadge n={t.badge ?? 0}/>
             </NavLink>
           )
         })}

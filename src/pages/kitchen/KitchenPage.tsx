@@ -1,52 +1,51 @@
+import { useOrderSync } from '@/hooks/useOrderSync'
+import type { Order,OrderItem,Recipe } from '@/lib/domainTypes'
+import { changeItem,readableError } from '@/lib/restaurantTransactions'
 // TypeScript / React
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { CheckCircle2, ChefHat, Clock } from 'lucide-react'
-import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Dialog,DialogContent,DialogFooter,DialogHeader,DialogTitle } from '@/components/ui/dialog'
+import { supabase } from '@/integrations/supabase/client'
 import { formatDistanceToNow } from 'date-fns'
 import { vi } from 'date-fns/locale'
+import { CheckCircle2,ChefHat,Clock } from 'lucide-react'
+import { useEffect,useRef,useState } from 'react'
+import { toast } from 'sonner'
 
 export default function KitchenPage() {
-  const [orders, setOrders] = useState<any[]>([])
-  const [openItem, setOpenItem] = useState<any>(null)
-  const [recipe, setRecipe] = useState<any[]>([])
+  const [orders, setOrders] = useState<(Omit<Order,'order_items'> & {order_items:OrderItem[]})[]>([])
+  const [openItem, setOpenItem] = useState<OrderItem | null>(null)
+  const [recipe, setRecipe] = useState<Recipe[]>([])
   const [recipeText, setRecipeText] = useState<string>('')
-  const [confirmItem, setConfirmItem] = useState<any>(null)
+  const [confirmItem, setConfirmItem] = useState<OrderItem | null>(null)
   
   // LỰA CHỌN TỐI ƯU: Lưu mốc thời gian bắt đầu nấu của các món locally để không bị lỗi DB 400
   const [cookingTimers, setCookingTimers] = useState<Record<string, number>>({})
   // Bộ kích hoạt re-render đồng hồ chạy theo từng giây (Thời gian thực)
   const [, setTick] = useState<number>(0)
 
-  const load = async () => {
-    const { data } = await supabase
+  const load = async (canCommit = () => true) => {
+    const { data, error } = await supabase
       .from('orders')
       .select('*, restaurant_tables(name, areas(name)), order_items(*)')
       .eq('is_paid', false)
       .order('created_at')
-
+    if (!canCommit()) return
+    if (error) { toast.error(error.message); return }
     const filtered = (data ?? [])
       .map(o => ({
         ...o,
-        order_items: o.order_items.filter((i: any) => i.status === 'pending' || i.status === 'cooking')
+        order_items: o.order_items.filter((i) => !i.no_cook && (i.status === 'pending' || i.status === 'cooking'))
       }))
       .filter(o => o.order_items.length > 0)
     setOrders(filtered)
+    const activeItems = filtered.flatMap(order => order.order_items)
+    setOpenItem((old) => old ? activeItems.find(item => item.id === old.id) ?? null : null)
+    setConfirmItem((old) => old ? activeItems.find(item => item.id === old.id) ?? null : null)
   }
 
-  useEffect(() => {
-    load()
-    const ch = supabase.channel(`kds-rt-${Math.random().toString(36).slice(2)}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, load)
-      .subscribe()
-      
-    return () => { supabase.removeChannel(ch) }
-  }, [])
+  useOrderSync(load)
 
   // SỬA: Chạy interval mỗi 1 giây để bộ đếm thời gian thực tự động nhảy số mượt mà
   useEffect(() => {
@@ -58,60 +57,47 @@ export default function KitchenPage() {
 
   // SỬA CHUẨN: Loại bỏ hoàn toàn updated_at khỏi câu lệnh SQL để loại bỏ lỗi 400 kẹt nút
   const startCooking = async (id: string) => {
-    // Lưu ngay mốc thời gian hiện tại vào State cục bộ trước khi đồng bộ lên Supabase
-    setCookingTimers(prev => ({ ...prev, [id]: Date.now() }))
-
-    const { error } = await supabase
-      .from('order_items')
-      .update({ status: 'cooking' }) // Chỉ cập nhật duy nhất status
-      .eq('id', id)
-
-    if (error) {
-      toast.error(error.message)
-    } else {
-      load()
-    }
+    try {
+      await changeItem(id, 'start')
+      setCookingTimers(prev => ({ ...prev, [id]: Date.now() }))
+    } catch (error: unknown) { toast.error(readableError(error)); await load() }
   }
 
   const finish = async (id: string) => {
-    const { error } = await supabase.from('order_items').update({ status: 'done' }).eq('id', id)
-    if (error) {
-      toast.error(error.message)
-    } else {
+    try {
+      await changeItem(id, 'finish')
       toast.success('Đã hoàn thành')
-      // Xóa timer của món này ra khỏi bộ nhớ local sau khi làm xong
-      setCookingTimers(prev => {
-        const copy = { ...prev }
-        delete copy[id]
-        return copy
-      })
-    }
+      setCookingTimers(prev => { const copy = { ...prev }; delete copy[id]; return copy })
+    } catch (error: unknown) { toast.error(readableError(error)) }
     setConfirmItem(null)
-    load()
+    await load()
   }
 
-  const handleFinishClick = (it: any) => {
+  const handleFinishClick = (it: OrderItem) => {
     if (it.status === 'pending') setConfirmItem(it)
     else finish(it.id)
   }
 
-  const openRecipe = async (it: any) => {
+  const recipeVersion = useRef(0)
+  const openRecipe = async (it: OrderItem) => {
+    const version = ++recipeVersion.current
     setOpenItem(it)
-    setRecipeText('')
+    setRecipeText(''); setRecipe([])
     const { data: recipeData } = await supabase
       .from('recipes')
       .select('*, ingredients(name,unit)')
       .eq('menu_item_id', it.menu_item_id)
+    if (version !== recipeVersion.current) return
     setRecipe(recipeData ?? [])
     const { data: menuData } = await supabase
       .from('menu_items')
       .select('recipe')
       .eq('id', it.menu_item_id)
       .maybeSingle()
-    if (menuData?.recipe) setRecipeText(menuData.recipe)
+    if (version === recipeVersion.current && menuData?.recipe) setRecipeText(menuData.recipe)
   }
 
-  const renderItemRow = (it: any) => {
+  const renderItemRow = (it: OrderItem) => {
     // LOGIC TÍNH THỜI GIAN THỰC CHUẨN XÁC:
     // Nếu đang nấu -> Ưu tiên mốc thời gian bấm nút từ local state, nếu reload trang thì fallback về it.created_at
     // Nếu chưa nấu -> Tính từ lúc tạo món ăn (it.created_at)
@@ -168,8 +154,8 @@ export default function KitchenPage() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {orders.map(o => {
-          const pendingItems = o.order_items.filter((i: any) => i.status === 'pending')
-          const cookingItems = o.order_items.filter((i: any) => i.status === 'cooking')
+          const pendingItems = o.order_items.filter((i) => i.status === 'pending')
+          const cookingItems = o.order_items.filter((i) => i.status === 'cooking')
           const areaName = o.restaurant_tables?.areas?.name
 
           return (
@@ -238,7 +224,7 @@ export default function KitchenPage() {
           </p>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setConfirmItem(null)}>Chưa nấu xong</Button>
-            <Button onClick={() => finish(confirmItem?.id)}>
+            <Button onClick={() => confirmItem && finish(confirmItem.id)}>
               <CheckCircle2 className="mr-1 h-4 w-4" />Xác nhận đã xong
             </Button>
           </DialogFooter>

@@ -1,24 +1,26 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '@/integrations/supabase/client'
-import { useAuth } from '@/contexts/AuthContext'
+import { AttendanceCard } from '@/components/AttendanceCard'
+import { AvatarUpload } from '@/components/AvatarUpload'
+import { MembersDirectoryCard } from '@/components/MembersDirectoryCard'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { Badge } from '@/components/ui/badge'
-import { toast } from 'sonner'
-import { differenceInDays, format, parseISO } from 'date-fns'
-import { AvatarUpload } from '@/components/AvatarUpload'
-import { AttendanceCard } from '@/components/AttendanceCard'
 import { WheelDatePicker } from '@/components/WheelDatePicker'
+import { useAuth } from '@/contexts/authState'
+import { supabase } from '@/integrations/supabase/client'
+import type { Profile } from '@/lib/domainTypes'
+import { dateInput,optionalText,phoneInput,requiredText } from '@/lib/inputValidation'
 import { ROLE_LABEL } from '@/lib/roles'
+import { differenceInDays,format,parseISO } from 'date-fns'
 import { Loader2 } from 'lucide-react'
-import { MembersDirectoryCard } from '@/components/MembersDirectoryCard'
+import { useEffect,useState } from 'react'
+import { toast } from 'sonner'
 
 export default function MePage() {
   const { user, role } = useAuth()
-  const [p, setP] = useState<any>(null)
+  const [p, setP] = useState<Pick<Profile,'id'|'username'|'full_name'|'phone'|'address'|'birthday'|'avatar_url'|'hire_date'|'hide_personal'> | null>(null)
   const [loading, setLoading] = useState(true) // Quản lý trạng thái tải bằng biến độc lập
 
   useEffect(() => {
@@ -27,7 +29,7 @@ export default function MePage() {
     
     supabase
       .from('profiles')
-      .select('*')
+      .select('id,username,full_name,phone,address,birthday,avatar_url,hire_date,hide_personal,created_at')
       .eq('id', user.id)
       .maybeSingle()
       .then(({ data }) => {
@@ -52,22 +54,22 @@ export default function MePage() {
   }, [user])
 
   if (!user) return <div className="grid h-40 place-items-center"><Loader2 className="animate-spin"/></div>
-  if (loading) return <div className="p-6 text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="animate-spin h-4 w-4"/> Đang tải hồ sơ...</div>
+  if (loading || !p) return <div className="p-6 text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="animate-spin h-4 w-4"/> Đang tải hồ sơ...</div>
 
   const tenure = p?.hire_date ? differenceInDays(new Date(), parseISO(p.hire_date)) : 0
 
   const save = async () => {
+    let clean: { full_name: string; username: string; phone: string; address: string; birthday: string | null }
+    try {
+      clean = { full_name: requiredText(p.full_name, 'Họ tên'), username: requiredText(p.username, 'Tên đăng nhập'), phone: phoneInput(p.phone),
+        address: optionalText(p.address, 'Địa chỉ'), birthday: dateInput(p.birthday, 'Ngày sinh', false) }
+    } catch (error) { return toast.error((error as Error).message) }
     // Nếu ngày sinh bị bỏ trống hoặc là chuỗi rỗng, ép về null để Postgres chấp nhận không điền
-    const cleanBirthday = p.birthday && p.birthday.trim() !== '' ? p.birthday : null
 
     // Dùng lệnh UPSERT (Nếu có rồi thì cập nhật, nếu chưa có thì chèn dòng mới vào DB)
     const { error } = await supabase.from('profiles').upsert({
       id: p.id,
-      full_name: p.full_name, 
-      username: p.username,
-      phone: p.phone, 
-      address: p.address,
-      birthday: cleanBirthday, // Gửi giá trị đã xử lý an toàn lên DB
+      ...clean,
       avatar_url: p.avatar_url, 
       hide_personal: p.hide_personal,
       hire_date: p.hire_date
@@ -87,12 +89,13 @@ export default function MePage() {
             // Cập nhật state cục bộ ngay lập tức để giao diện hiển thị ảnh mới luôn
             setP({ ...p, avatar_url: url })
             
-            // SỬA TẠI ĐÂY: Rải toàn bộ object (...p) thay vì chỉ gửi id để tránh dính lỗi thiếu trường dữ liệu bắt buộc (NOT NULL)
+            // Chỉ lưu các trường hồ sơ được phép, không sao chép dữ liệu xác thực.
             const { error } = await supabase
               .from('profiles')
               .upsert({ 
-                ...p, 
-                avatar_url: url 
+                id: p.id, username: p.username, full_name: p.full_name,
+                phone: p.phone, address: p.address, birthday: p.birthday || null,
+                hide_personal: p.hide_personal, hire_date: p.hire_date, avatar_url: url
               })
               
             if (error) toast.error(error.message); else toast.success(url ? 'Đã cập nhật ảnh' : 'Đã xoá ảnh')
