@@ -1,3 +1,5 @@
+import { Suspense } from 'react'
+import { PageLoading } from '@/components/PageLoading'
 import { NumberBadge } from '@/components/NumberBadge';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/authState';
@@ -91,7 +93,7 @@ export default function KitchenLayout() {
         </header>
         
         {/* VIEW CONTENT */}
-        <main className="flex-1 overflow-y-auto pb-20 md:pb-0"><Outlet/></main>
+        <main className="flex-1 overflow-y-auto pb-20 md:pb-0"><Suspense fallback={<PageLoading/>}><Outlet/></Suspense></main>
         
         {/* --- MENU BOTTOM BAR (ĐIỆN THOẠI) --- */}
         <nav className="fixed inset-x-0 bottom-0 z-40 border-t bg-card/95 backdrop-blur md:hidden">

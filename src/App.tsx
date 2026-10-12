@@ -1,8 +1,9 @@
+import { MotionRuntime } from '@/components/MotionRuntime';
 import { RequireRole } from "@/components/RequireRole";
 import { Toaster as Sonner } from "@/components/ui/sonner";
-import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from '@/contexts/AuthContext';
+import { NotificationProvider } from '@/contexts/NotificationProvider';
 import { useAuth } from '@/contexts/authState';
 import { QueryClient,QueryClientProvider } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
@@ -44,10 +45,11 @@ function AdminOnly() {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <Toaster />
       <Sonner />
       <BrowserRouter>
+        <MotionRuntime/>
         <AuthProvider>
+          <NotificationProvider>
           <Suspense fallback={<div className="grid h-screen place-items-center"><Loader2 className="animate-spin"/></div>}>
           <Routes>
             <Route path="/" element={<RootRedirect />} />
@@ -90,6 +92,7 @@ const App = () => (
           </Routes>
           </Suspense>
           <AdminOnly />
+          </NotificationProvider>
         </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>

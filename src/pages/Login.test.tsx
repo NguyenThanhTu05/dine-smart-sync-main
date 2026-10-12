@@ -13,7 +13,7 @@ vi.mock('@/integrations/supabase/client', () => ({
 vi.mock('@/contexts/authState', () => ({
   useAuth: () => ({ session: null, role: null, loading: false, isRecovery: mock.recovery, signInWithUsername: mock.signIn }),
 }))
-vi.mock('sonner', () => ({ toast: { success: mock.success, error: mock.error } }))
+vi.mock('@/lib/notifications', () => ({ toast: { success: mock.success, error: mock.error } }))
 
 beforeEach(() => {
   vi.clearAllMocks()

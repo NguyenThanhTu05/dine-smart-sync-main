@@ -3,7 +3,7 @@ import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { printBill } from './printBill'
 const mock = vi.hoisted(() => ({ order: {} as Record<string, unknown>, quote: vi.fn(), error: vi.fn(), orderError: null as Error | null }))
 vi.mock('@/lib/restaurantTransactions', () => ({ quoteOrder: mock.quote, readableError: (e: Error) => e.message }))
-vi.mock('sonner', () => ({ toast: { error: mock.error } }))
+vi.mock('@/lib/notifications', () => ({ toast: { error: mock.error } }))
 vi.mock('@/lib/formatVND', () => ({ formatVND: (v: number) => `VND:${v}` }))
 vi.mock('@/integrations/supabase/client', () => ({ supabase: {
   rpc: vi.fn(async () => ({ data: [] })),

@@ -1,3 +1,6 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
+import { recordSuccess } from '@/lib/motion'
+import { MotionValue } from '@/components/MotionValue'
 import { useOrderSync } from '@/hooks/useOrderSync'
 import type { Order,OrderItem,Recipe } from '@/lib/domainTypes'
 import { changeItem,readableError } from '@/lib/restaurantTransactions'
@@ -11,9 +14,13 @@ import { formatDistanceToNow } from 'date-fns'
 import { vi } from 'date-fns/locale'
 import { CheckCircle2,ChefHat,Clock } from 'lucide-react'
 import { useEffect,useRef,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 export default function KitchenPage() {
+  const pendingActions = useRef(new Set<string>())
+  const [busyItems, setBusyItems] = useState<Set<string>>(new Set())
+  const beginAction = (id: string) => { if (pendingActions.current.has(id)) return false; pendingActions.current.add(id); setBusyItems(new Set(pendingActions.current)); return true }
+  const endAction = (id: string) => { pendingActions.current.delete(id); setBusyItems(new Set(pendingActions.current)) }
   const [orders, setOrders] = useState<(Omit<Order,'order_items'> & {order_items:OrderItem[]})[]>([])
   const [openItem, setOpenItem] = useState<OrderItem | null>(null)
   const [recipe, setRecipe] = useState<Recipe[]>([])
@@ -57,20 +64,23 @@ export default function KitchenPage() {
 
   // SỬA CHUẨN: Loại bỏ hoàn toàn updated_at khỏi câu lệnh SQL để loại bỏ lỗi 400 kẹt nút
   const startCooking = async (id: string) => {
+    if (!beginAction(id)) return
     try {
       await changeItem(id, 'start')
       setCookingTimers(prev => ({ ...prev, [id]: Date.now() }))
-    } catch (error: unknown) { toast.error(readableError(error)); await load() }
+    } catch (error: unknown) { toast.error(readableError(error)); await load() } finally { endAction(id) }
   }
 
   const finish = async (id: string) => {
+    if (!beginAction(id)) return
     try {
       await changeItem(id, 'finish')
-      toast.success('Đã hoàn thành')
+      recordSuccess(`dish-${id}`)
+      toast.success('Món đã xong, đang chờ bê ra bàn')
       setCookingTimers(prev => { const copy = { ...prev }; delete copy[id]; return copy })
     } catch (error: unknown) { toast.error(readableError(error)) }
     setConfirmItem(null)
-    await load()
+    try { await load() } finally { endAction(id) }
   }
 
   const handleFinishClick = (it: OrderItem) => {
@@ -106,7 +116,7 @@ export default function KitchenPage() {
       : new Date(it.created_at)
 
     return (
-      <div key={it.id} className="rounded-lg border bg-background p-3 shadow-sm">
+      <div key={it.id} data-motion-id={`dish-${it.id}`} data-motion-origin className="rounded-lg border bg-background p-3 shadow-sm">
         <button onClick={() => openRecipe(it)} className="block w-full text-left">
           <div className="flex items-baseline justify-between">
             <span className="text-base font-bold text-foreground">{it.name_snapshot}</span>
@@ -124,16 +134,16 @@ export default function KitchenPage() {
         </button>
         <div className="mt-2 flex gap-2">
           {it.status === 'pending' && (
-            <Button size="sm" variant="outline" className="flex-1 text-xs font-bold h-8" onClick={() => startCooking(it.id)}>
+            <Button size="sm" variant="outline" className="flex-1 text-xs font-bold h-8" busy={busyItems.has(it.id)} onClick={() => startCooking(it.id)}>
               Bắt đầu nấu
             </Button>
           )}
           {it.status === 'cooking' && (
-            <Badge variant="secondary" className="flex-1 justify-center py-1 text-xs font-bold bg-amber-50 border-amber-200 text-amber-700 h-8 rounded-md">
+            <Badge variant="secondary" className="motion-step flex-1 justify-center py-1 text-xs font-bold bg-amber-50 border-amber-200 text-amber-700 h-8 rounded-md">
               Đang nấu...
             </Badge>
           )}
-          <Button size="sm" className="flex-1 text-xs font-bold h-8" onClick={() => handleFinishClick(it)}>
+          <Button size="sm" className="flex-1 text-xs font-bold h-8" disabled={busyItems.has(it.id)} onClick={() => handleFinishClick(it)}>
             <CheckCircle2 className="mr-1 h-3.5 w-3.5" />Xong
           </Button>
         </div>
@@ -144,11 +154,11 @@ export default function KitchenPage() {
   return (
     <div className="min-h-screen bg-foreground/5 p-4 md:p-6 space-y-4">
       <div className="flex items-center justify-between border-b pb-4">
-        <h1 className="flex items-center gap-2 text-2xl md:text-3xl font-black">
+        <AnimatedHeading as="h1" className="flex items-center gap-2 text-2xl md:text-3xl font-black">
           <ChefHat className="h-7 w-7 text-primary" />Khu chế biến
-        </h1>
+        </AnimatedHeading>
         <Badge className="text-sm md:text-base px-3 py-1">
-          {orders.reduce((s, o) => s + o.order_items.length, 0)} món
+          <MotionValue value={orders.reduce((s, o) => s + o.order_items.length, 0)}/> món
         </Badge>
       </div>
 
@@ -159,11 +169,11 @@ export default function KitchenPage() {
           const areaName = o.restaurant_tables?.areas?.name
 
           return (
-            <Card key={o.id} className="border-2 border-primary/20 bg-card p-4 shadow-soft flex flex-col justify-between h-fit">
+            <Card key={o.id} data-motion-id={`kitchen-${o.id}`} className="border-2 border-primary/20 bg-card p-4 shadow-soft flex flex-col justify-between h-fit">
               <div>
                 <div className="mb-3 flex items-center justify-between border-b pb-2">
                   <div>
-                    <h2 className="text-xl font-black leading-tight">{o.restaurant_tables?.name}</h2>
+                    <AnimatedHeading as="h2" className="text-xl font-black leading-tight">{o.restaurant_tables?.name}</AnimatedHeading>
                     {areaName && (
                       <span className="text-xs font-medium text-muted-foreground">{areaName}</span>
                     )}
@@ -178,8 +188,8 @@ export default function KitchenPage() {
                 <div className="space-y-4">
                   {pendingItems.length > 0 && (
                     <div className="space-y-1.5">
-                      <div className="text-[11px] font-bold uppercase tracking-wider text-destructive flex items-center gap-1.5 pl-0.5">
-                        <span className="h-1.5 w-1.5 rounded-full bg-destructive animate-pulse" />
+                      <div data-motion-count className="text-[11px] font-bold uppercase tracking-wider text-destructive flex items-center gap-1.5 pl-0.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
                         Chưa nấu ({pendingItems.length})
                       </div>
                       <div className="space-y-2">
@@ -194,7 +204,7 @@ export default function KitchenPage() {
 
                   {cookingItems.length > 0 && (
                     <div className="space-y-1.5">
-                      <div className="text-[11px] font-bold uppercase tracking-wider text-amber-600 flex items-center gap-1.5 pl-0.5">
+                      <div data-motion-count className="text-[11px] font-bold uppercase tracking-wider text-amber-600 flex items-center gap-1.5 pl-0.5">
                         <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                         Đang nấu ({cookingItems.length})
                       </div>
@@ -210,7 +220,7 @@ export default function KitchenPage() {
         })}
 
         {orders.length === 0 && (
-          <p className="col-span-full rounded-lg border-2 border-dashed p-12 text-center text-muted-foreground bg-card">
+          <p className="motion-empty col-span-full rounded-lg border-2 border-dashed p-12 text-center text-muted-foreground bg-card">
             Chưa có món nào cần chế biến 🎉
           </p>
         )}
@@ -224,7 +234,7 @@ export default function KitchenPage() {
           </p>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setConfirmItem(null)}>Chưa nấu xong</Button>
-            <Button onClick={() => confirmItem && finish(confirmItem.id)}>
+            <Button busy={!!confirmItem && busyItems.has(confirmItem.id)} onClick={() => confirmItem && finish(confirmItem.id)}>
               <CheckCircle2 className="mr-1 h-4 w-4" />Xác nhận đã xong
             </Button>
           </DialogFooter>

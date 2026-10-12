@@ -1,8 +1,9 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { readOrderItems } from '@/lib/readOrderItems'
 import type { BillItem,Order } from '@/lib/domainTypes';
 import { billDisplayAmount,invoiceAmounts,paymentQuoteSchema } from '@/lib/invoiceAmounts';
 import { subscribeOrderChanges } from '@/lib/orderSync';
-import { toast } from 'sonner';
+import { toast } from '@/lib/notifications';
 import { vietnamDayRange } from '../../../supabase/functions/_shared/vietnamTime';
 type BillRow = Order & {_displayName:string;_areaName:string|null;_isGroup:boolean}
 // TypeScript / React
@@ -143,7 +144,7 @@ export default function BillsPage() {
 
   return (
     <div className="space-y-4 p-6">
-      <h1 className="text-2xl font-bold">Bill Order</h1>
+      <AnimatedHeading as="h1" className="text-2xl font-bold">Bill Order</AnimatedHeading>
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
@@ -175,7 +176,7 @@ export default function BillsPage() {
   const snapshotResult = paymentQuoteSchema.safeParse(o.payment_snapshot)
   const snapshot = snapshotResult.success ? snapshotResult.data : null
   return (
-          <Card key={o.id} className="p-4 flex flex-col justify-between min-h-[180px]">
+          <Card key={o.id} data-motion-id={`bill-${o.id}`} className="p-4 flex flex-col justify-between min-h-[180px]">
             <div>
               <div className="flex items-start justify-between">
                 <div>

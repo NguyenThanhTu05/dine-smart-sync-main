@@ -1,22 +1,24 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
+import { useTableLayoutMotion } from '@/lib/motion'
+import { MergedTableGroup } from './MergedTableGroup'
 import { TouchTableDnd,TouchTableSurface } from '@/components/tables/TouchTableDrag'
+import { NumberBadge } from '@/components/NumberBadge'
 import { Badge } from '@/components/ui/badge'
 import { RestaurantTable,STATUS_COLOR,STATUS_LABEL,TableStatus,useTables } from '@/hooks/useTables'
+import { useGlobalCounts } from '@/hooks/useGlobalCounts'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { readyCountForTable } from '@/lib/notificationCounts'
 import { mergeTables,readableError } from '@/lib/restaurantTransactions'
-import { tableGroupLayout } from '@/lib/tableLayout'
+import { tableClustersByArea } from '@/lib/tableLayout'
 import { cn } from '@/lib/utils'
-import { Link2 } from 'lucide-react'
 import { ReactNode,useEffect,useMemo,useRef,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 function canMerge(a: TableStatus, b: TableStatus) {
   const ok: TableStatus[] = ['empty', 'serving']
   if (!ok.includes(a) || !ok.includes(b)) return false
   return a === 'empty' || b === 'empty'
 }
-
-type Cluster =
-  | { kind: 'single'; table: RestaurantTable }
-  | { kind: 'group'; groupId: string; tables: RestaurantTable[] }
 
 interface Props {
   onSelectTable: (t: RestaurantTable) => void
@@ -26,6 +28,8 @@ interface Props {
 
 export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props) {
   const { tables, areas, reload, loading } = useTables()
+  const { readyByTable, readyError } = useGlobalCounts()
+  const isMobile = useIsMobile()
   const [localStatuses, setLocalStatuses] = useState<Record<string, TableStatus>>({})
   const pendingIds = useRef<Set<string>>(new Set())
 
@@ -67,6 +71,7 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
     }
   }, [reload])
 
+  const layoutRef = useRef<HTMLDivElement>(null)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overId, setOverId] = useState<string | null>(null)
 
@@ -91,34 +96,15 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
     reload()
   }
 
-  const clustersByArea = useMemo(() => {
-    const map: Record<string, Cluster[]> = {}
-    for (const a of areas) {
-      const areaTables = tables.filter(t => t.area_id === a.id)
-      const seen = new Set<string>()
-      const clusters: Cluster[] = []
-      for (const t of areaTables) {
-        if (seen.has(t.id)) continue
-        if (t.merged_group_id) {
-          const grouped = areaTables.filter(x => x.merged_group_id === t.merged_group_id)
-          grouped.forEach(g => seen.add(g.id))
-          clusters.push({ kind: 'group', groupId: t.merged_group_id, tables: grouped })
-        } else {
-          seen.add(t.id)
-          clusters.push({ kind: 'single', table: t })
-        }
-      }
-      map[a.id] = clusters
-    }
-    return map
-  }, [tables, areas])
+  const clustersByArea = useMemo(() => tableClustersByArea(tables, areas.map(area => area.id)), [tables, areas])
 
-  const renderCell = (t: RestaurantTable, opts: { rounded: string; inGroup: boolean }) => {
+  const renderCell = (t: RestaurantTable, opts: { rounded: string; inGroup: boolean; areaLabel?: string }) => {
     const currentStatus = localStatuses[t.id] ?? t.status
     const isDragging = dragId === t.id
     const isOver = overId === t.id && dragId && dragId !== t.id
     const draggable = enableMerge && currentStatus === 'empty'
     const isColorRestricted = currentStatus !== 'empty'
+    const ready = currentStatus === 'serving' ? readyCountForTable(t, tables, readyByTable) : 0
 
     return (
       <TouchTableSurface
@@ -151,21 +137,25 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
         }}
         onClick={() => { if (!dragId) onSelectTable({ ...t, status: currentStatus, merged_group_id: t.merged_group_id }) }}
         className={cn(
-          'relative flex flex-1 aspect-square min-w-0 flex-col items-center justify-center p-2 shadow-card transition-colors duration-300 select-none',
+          'app-table-surface relative flex flex-1 min-w-0 flex-col items-center justify-center p-2 transition-colors duration-300 select-none',
           STATUS_COLOR[currentStatus], opts.rounded,
-          opts.inGroup && 'border-r border-background/40 last:border-r-0',
+          opts.inGroup ? 'aspect-auto shadow-none' : 'aspect-square shadow-card',
           isDragging && 'opacity-40 scale-95',
           isOver && 'z-10 scale-110 ring-4 ring-primary ring-offset-2',
           !isDragging && !isOver && 'hover:brightness-110',
           isColorRestricted ? 'cursor-not-allowed opacity-95' : 'cursor-grab active:cursor-grabbing'
         )}
       >
-        <div className="text-base font-bold leading-tight md:text-xl">{t.name}</div>
+        {!opts.inGroup && <NumberBadge n={ready} label={`${ready} món chờ bê${t.merged_group_id ? ' của nhóm bàn' : ` tại ${t.name}`}`} />}
+        <AnimatedHeading as="span" className="text-base font-bold leading-tight md:text-xl">{t.name}</AnimatedHeading>
+        {opts.areaLabel && <div className="max-w-full truncate text-[10px] opacity-90" title={opts.areaLabel}>{opts.areaLabel}</div>}
         <div className="mt-0.5 text-[10px] opacity-90 md:text-xs">{t.seats} chỗ</div>
         <Badge variant="secondary" className="absolute bottom-1 text-[9px]">{STATUS_LABEL[currentStatus]}</Badge>
       </TouchTableSurface>
     )
   }
+
+  useTableLayoutMotion(layoutRef, tables.map(t => `${t.id}:${t.merged_group_id}:${t.area_id}`).join('|') + String(isMobile), !!dragId)
 
   if (loading) return <div className="p-4 text-sm text-muted-foreground">Đang tải sơ đồ bàn...</div>
 
@@ -174,36 +164,36 @@ export function TablesGrid({ onSelectTable, enableMerge = true, header }: Props)
     <TouchTableDnd onStart={setDragId} onOver={setOverId} onCancel={() => { setDragId(null); setOverId(null) }}
       onEnd={(source,target) => { setDragId(null); setOverId(null); if (target?.kind === 'table') void performMerge(source,target.id) }}
       overlay={draggedTable && <div className={cn('relative flex aspect-square flex-col items-center justify-center rounded-2xl p-2 shadow-lg',STATUS_COLOR[localStatuses[draggedTable.id] ?? draggedTable.status])}><div className="text-base font-bold md:text-xl">{draggedTable.name}</div><div className="text-[10px] md:text-xs">{draggedTable.seats} chỗ</div><Badge variant="secondary" className="absolute bottom-1 text-[9px]">{STATUS_LABEL[localStatuses[draggedTable.id] ?? draggedTable.status]}</Badge></div>}>
-    <div className="space-y-6 p-4 md:p-6">
+    <div ref={layoutRef} className="space-y-6 p-4 md:p-6">
       {header}
+      {readyError && <p role="status" className="text-xs text-muted-foreground">Chưa cập nhật được số món chờ bê. Kiểm tra mạng; hệ thống sẽ tải lại khi kết nối hoặc quay lại trang.</p>}
       {areas.map(a => {
         const clusters = clustersByArea[a.id] ?? []
         return (
           <section key={a.id}>
             <h2 className="mb-2 text-sm font-bold text-muted-foreground">{a.name}</h2>
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 md:gap-3">
+            {areas.filter(host => host.id !== a.id).flatMap(host => (clustersByArea[host.id] ?? [])
+              .filter(cluster => cluster.kind === 'group' && cluster.tables.some(table => table.area_id === a.id))
+              .map(cluster => cluster.kind === 'group' && <p key={cluster.groupId} className="mb-2 text-xs text-muted-foreground">
+                {cluster.tables.filter(table => table.area_id === a.id).map(table => table.name).join(' + ')} đang ghép tại {host.name}.
+              </p>))}
+            <div className={cn('grid grid-flow-row-dense items-start gap-2 md:gap-3', isMobile ? 'grid-cols-3' : 'grid-cols-6')}>
               {clusters.map(c => {
                 if (c.kind === 'single') {
                   return (
-                    <div key={c.table.id} className="relative">
+                    <div key={c.table.id} data-motion-layout={c.table.id} className="relative">
                       {renderCell(c.table, { rounded: 'rounded-2xl', inGroup: false })}
                     </div>
                   )
                 }
-                const layout = tableGroupLayout(c.tables.length)
-                return (
-                  <div
-                    key={c.groupId}
-                    className={cn('relative min-w-0 overflow-hidden rounded-2xl ring-2 ring-primary/70 ring-offset-2 bg-background shadow-md',layout.span)}
-                  >
-                    <div className={cn('grid w-full',layout.grid)}>
-                      {c.tables.map(t => renderCell(t, { rounded: 'rounded-none', inGroup: true }))}
-                    </div>
-                    <div className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-foreground shadow">
-                      <Link2 className="h-3 w-3" /> {c.tables.length} bàn
-                    </div>
-                  </div>
-                )
+                const ready = c.tables.some(table => (localStatuses[table.id] ?? table.status) === 'serving')
+                  ? readyCountForTable(c.tables[0], tables, readyByTable) : 0
+                const crossArea = new Set(c.tables.map(table => table.area_id)).size > 1
+                return <MergedTableGroup key={c.groupId} groupId={c.groupId} tables={c.tables}
+                  columns={isMobile ? 3 : 6} ready={ready}
+                  renderTable={table => renderCell(table, { rounded: 'rounded-none', inGroup: true,
+                    areaLabel: crossArea ? areas.find(area => area.id === table.area_id)?.name ?? 'Chưa có khu vực' : undefined })} />
+
               })}
             </div>
           </section>

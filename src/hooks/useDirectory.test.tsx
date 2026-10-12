@@ -4,7 +4,7 @@ import { useDirectory } from './useDirectory';
 const mock = vi.hoisted(() => ({ auth: { user: { id: 'admin' }, role: 'admin' }, rpc: vi.fn(), error: vi.fn() }));
 vi.mock('@/contexts/authState', () => ({ useAuth: () => mock.auth }));
 vi.mock('@/integrations/supabase/client', () => ({ supabase: { rpc: mock.rpc } }));
-vi.mock('sonner', () => ({ toast: { error: mock.error } }));
+vi.mock('@/lib/notifications', () => ({ toast: { error: mock.error } }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); mock.auth = { user: { id: 'admin' }, role: 'admin' }; });
 it('ignores an old privileged directory response after switching accounts', async () => {
   let resolveOld: (value: unknown) => void = () => undefined;

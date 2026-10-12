@@ -1,13 +1,15 @@
+import { useDismissGesture } from '@/lib/useDismissGesture'
+import { MotionPresence } from '@/components/MotionPresence'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { supabase } from '@/integrations/supabase/client'
 import { errorMessage } from '@/lib/errors'
 import { aiResponse } from '@/lib/functionResponses'
-import { Loader2,Send,Sparkles,X } from 'lucide-react'
+import { Send,Sparkles,X } from 'lucide-react'
 import { useEffect,useRef,useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 type Msg = { role: 'user' | 'assistant'; content: string }
 
@@ -22,6 +24,7 @@ const STORAGE_KEY = 'ai_chat_history'
 
 export default function AIAssistantWidget() {
   const [open, setOpen] = useState(false)
+  const dismissGesture = useDismissGesture(() => setOpen(false))
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
 const [messages, setMessages] = useState<Msg[]>(() => {
@@ -85,9 +88,9 @@ useEffect(() => {
         </button>
       )}
 
-      {open && (
-        <div className="fixed bottom-5 right-5 z-50 flex h-[600px] max-h-[85vh] w-[400px] max-w-[95vw] flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl">
-          <div className="flex items-center justify-between border-b bg-gradient-to-r from-primary to-primary/80 p-3 text-primary-foreground">
+      <MotionPresence show={open}>{state => (
+        <div data-ai-open data-state={state} className="premium-ai fixed bottom-5 right-5 z-50 flex h-[600px] max-h-[85vh] w-[400px] max-w-[95vw] flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl">
+          <div {...dismissGesture} className="motion-gesture-handle flex items-center justify-between border-b bg-gradient-to-r from-primary to-primary/80 p-3 text-primary-foreground">
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5" />
               <div>
@@ -101,7 +104,7 @@ useEffect(() => {
           <ScrollArea className="flex-1 p-3">
             <div className="space-y-3">
               {messages.map((m, i) => (
-                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={i} data-motion-message={`ai-${i}`} className={`motion-message flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
                     {m.role === 'assistant' ? (
                       <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-ul:my-1 prose-table:my-1">
@@ -114,7 +117,7 @@ useEffect(() => {
               {loading && (
                 <div className="flex justify-start">
                   <div className="flex items-center gap-2 rounded-2xl bg-muted px-3 py-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-3 w-3 animate-spin" /> Đang xử lý...
+                    <span className="motion-typing" aria-hidden="true"><i/><i/><i/></span><span role="status">Đang xử lý...</span>
                   </div>
                 </div>
               )}
@@ -141,14 +144,14 @@ useEffect(() => {
         placeholder="Ra lệnh cho AI..."
         disabled={loading}
       />
-      <Button size="icon" onClick={() => send()} disabled={loading || !input.trim()}>
+      <Button size="icon" busy={loading} onClick={() => send()} disabled={loading || !input.trim()}>
         <Send className="h-4 w-4" />
       </Button>
     </div>
   </div>
 </div>
         </div>
-      )}
+      )}</MotionPresence>
     </>
   )
 }

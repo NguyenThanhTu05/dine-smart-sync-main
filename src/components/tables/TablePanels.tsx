@@ -1,3 +1,5 @@
+import { MotionValue } from '@/components/MotionValue'
+import { discountQuotePreview } from '@/lib/invoiceAmounts'
 import { useOrderSync } from '@/hooks/useOrderSync'
 import type { Tables } from '@/integrations/supabase/types'
 import type { BillItem,Order } from '@/lib/domainTypes'
@@ -32,7 +34,7 @@ Search,
 Trash2
 } from 'lucide-react'
 import { useEffect,useMemo,useRef,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 function normalize(s: string) {
   return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd')
@@ -197,7 +199,7 @@ export function OrderPanel({ table, onDone }: { table: RestaurantTable; onDone: 
       <ScrollArea className="flex-1">
         <div className="grid grid-cols-2 gap-2 p-3">
           {filtered.map(it => (
-            <button key={it.id} onClick={() => addItem(it)} className="flex flex-col overflow-hidden rounded-xl border bg-card text-left shadow-card active:scale-95 transition">
+            <button key={it.id} data-motion-id={`order-menu-${it.id}`} onClick={() => addItem(it)} className="flex flex-col overflow-hidden rounded-xl border bg-card text-left shadow-card active:scale-95 transition">
               {it.image_url ? (
                 <img src={it.image_url} alt={it.name} className="aspect-square w-full object-cover" />
               ) : (
@@ -279,7 +281,7 @@ export function ServedPanel({ table, onBack }: { table: RestaurantTable; onBack:
   useOrderSync(load, `${table.id}:${table.merged_group_id ?? ''}`)
 
   const markServed = async (id: string) => {
-    try { await changeItem(id, 'serve') } catch (error: unknown) { toast.error(readableError(error)); await load() }
+    try { await changeItem(id, 'serve'); toast.success('Đã xác nhận bê món ra bàn') } catch (error: unknown) { toast.error(readableError(error)); await load() }
   }
 
   const cancelItem = async (id: string) => {
@@ -408,7 +410,13 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
   const [customReturnReason, setCustomReturnReason] = useState<string>('')
 
   const [discountRaw, setDiscountPercent] = useState<number | string>(0)
-  const discountPercent = (() => { try { return decimalInput(discountRaw, 'Giảm giá', 6, 100) } catch { return 0 } })()
+  const discountInput = useMemo(() => {
+    try { return { percent: decimalInput(discountRaw, 'Giảm giá', 6, 100), error: null } }
+    catch (error) { return { percent: null, error: readableError(error) } }
+  }, [discountRaw])
+  const discountPercent = discountInput.percent
+  const [isApplyingDiscount, setIsApplyingDiscount] = useState(false)
+  const discountInFlight = useRef(false)
   const [appliedDiscountPercent, setAppliedDiscountPercent] = useState<number>(0)  // ← thêm
   const [customDiscountReason, setCustomDiscountReason] = useState<string>('')
   const [discountReason, setDiscountReason] = useState<string>('Ưu đãi khuyến mãi')
@@ -558,14 +566,16 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
   const buildDiscountReason = (): string => discountReason === 'Khác' ? (customDiscountReason.trim() || 'Không ghi rõ') : discountReason
 
   const handleConfirmDiscount = async () => {
-    if (!order || discountPercent <= 0) return
+    if (!order || !quote || discountPercent === null || discountInFlight.current) return
+    discountInFlight.current = true
+    setIsApplyingDiscount(true)
     try {
-      decimalInput(discountRaw, 'Giảm giá', 6, 100, true)
+      const percent = decimalInput(discountRaw, 'Giảm giá', 6, 100)
+      if (percent > 0 && quote.subtotal <= 0) throw new Error('Hóa đơn 0 ₫ chỉ có thể áp dụng giảm giá 0%.')
       const finalDiscountReason = optionalText(buildDiscountReason(), 'Lý do giảm giá')
-      await adjustOrder(order.id, 'discount', { percent: discountPercent }, finalDiscountReason)
-
-      toast.success('Đã áp dụng giảm giá')
-      setAppliedDiscountPercent(discountPercent)
+      await adjustOrder(order.id, 'discount', { percent }, finalDiscountReason)
+      toast.success(percent === 0 ? 'Đã cập nhật giảm giá riêng của bàn về 0%' : 'Đã áp dụng giảm giá')
+      setAppliedDiscountPercent(percent)
       setDiscountPercent(0)
       setDiscountReason('Ưu đãi khuyến mãi')
       setCustomDiscountReason('')
@@ -573,6 +583,9 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
       await loadOrderAndSettings()
     } catch (err: unknown) {
       toast.error('❌ Lỗi: ' + readableError(err))
+    } finally {
+      discountInFlight.current = false
+      setIsApplyingDiscount(false)
     }
   }
 
@@ -581,7 +594,7 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
     setIsPaying(true)
     try {
       await payOrder(order.id, action, quote.fingerprint)
-      toast.success(action === 'confirm_cash' ? 'Đã nhận tiền → Bàn chờ dọn' : 'Chuyển sang chờ thanh toán')
+      toast.success(action === 'confirm_cash' ? 'Đã nhận tiền → Bàn chờ dọn' : 'Chuyển sang chờ thanh toán', { description: `${formatVND(quote.total)} • ${action === 'confirm_cash' ? 'Tiền mặt' : 'QR — đang chờ xác nhận'}` })
       onDone()
     } catch (error: unknown) {
       toast.error(readableError(error))
@@ -711,62 +724,34 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
   }
 
   if (subView === 'discount') {
-    const previewSvc = Math.round(subtotal * (settings.service_percent / 100))
-    const previewAfterSvc = subtotal + previewSvc
-    const previewVAT = Math.round(previewAfterSvc * (settings.vat_percent / 100))
-    const previewAfterVAT = previewAfterSvc + previewVAT
-    const discountAmount = Math.round(previewAfterVAT * (discountPercent / 100))
-    // discountAmount này dùng trong JSX của subView discount
+    const preview = quote && discountPercent !== null ? discountQuotePreview(quote, discountPercent) : null
     return (
       <div className="flex h-[80vh] flex-col bg-gradient-to-b from-background via-amber-50/30 to-background">
-        <DialogHeader className="border-b p-4 bg-amber-50/50"><DialogTitle className="text-amber-700">💰 Giảm Giá Bill — {table.name}</DialogTitle></DialogHeader>
+        <DialogHeader className="border-b p-4 bg-amber-50/50"><DialogTitle data-motion-count className="text-amber-700">💰 Giảm Giá Bill — {table.name}</DialogTitle></DialogHeader>
         <ScrollArea className="flex-1 p-4 space-y-6">
-          <Card className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 border-amber-200"><div className="text-xs text-muted-foreground font-semibold mb-1">TẠM TÍNH HIỆN TẠI:</div><span className="font-black text-lg text-blue-700">{formatVND(subtotal - discountAmount)}</span></Card>
+          <Card className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 border-amber-200">
+            <div className="text-xs text-muted-foreground font-semibold mb-1">TỔNG THANH TOÁN HIỆN TẠI:</div>
+            <span data-motion-count data-testid="discount-current-total" className="font-black text-lg text-blue-700"><MotionValue value={finalTotal}>{formatVND(finalTotal)}</MotionValue></span>
+          </Card>
           <div className="space-y-3">
-            <div className="text-xs font-bold uppercase text-muted-foreground">Phần Trăm Giảm Giá:</div>
-            {subtotal <= 0 && (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-600 font-semibold text-center">
-                ⚠️ Không thể giảm giá khi bill đã về 0 ₫
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              <Button size="icon" variant="outline" disabled={discountPercent <= 0} onClick={() => setDiscountPercent(Math.max(0, discountPercent - 1))}><Minus className="h-4 w-4" /></Button>
-              <div className="relative flex-1"><Input
-                type="number"
-                min={0}
-                max={100}
-                value={discountRaw === 0 ? '' : discountRaw}
-                placeholder="0"
-                onFocus={(e) => e.target.select()}
-                onChange={(e) => {
-                  setDiscountPercent(e.target.value)
-                }}
-                className="text-center font-bold text-2xl pr-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              /><span className="absolute right-3 top-1/2 -translate-y-1/2 font-bold text-muted-foreground text-lg">%</span></div>
-              <Button size="icon" variant="outline" disabled={discountPercent >= 100} onClick={() => setDiscountPercent(Math.min(100, discountPercent + 1))}><Plus className="h-4 w-4" /></Button>
-            </div>
-            {/* Preset % nhanh */}
-<div className="flex flex-wrap gap-1.5 mt-2">
-  {[5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100].map(p => (
-    <button
-      key={p}
-      type="button"
-      onClick={() => setDiscountPercent(p)}
-      className={`px-2.5 py-1 rounded-full text-xs font-bold border transition-colors
-        ${discountPercent === p
-          ? 'bg-amber-500 text-white border-amber-500'
-          : 'bg-muted text-muted-foreground border-border hover:bg-accent'
-        }`}
-    >
-      {p}%
-    </button>
-  ))}
-</div>
+            <label htmlFor="discount-percent" className="text-xs font-bold uppercase text-muted-foreground">Phần Trăm Giảm Giá:</label>
+            <div className="relative"><Input id="discount-percent"
+              type="text" inputMode="decimal" maxLength={32}
+              value={discountRaw} placeholder="0–100"
+              aria-invalid={discountInput.error !== null}
+              aria-describedby={discountInput.error ? 'discount-percent-error' : undefined}
+              onFocus={event => event.target.select()}
+              onChange={event => setDiscountPercent(event.target.value)}
+              className="text-center font-bold text-2xl pr-8"
+            /><span className="absolute right-3 top-1/2 -translate-y-1/2 font-bold text-muted-foreground text-lg">%</span></div>
+            {discountInput.error && <p id="discount-percent-error" role="alert" className="text-xs text-red-600">{discountInput.error}</p>}
+            {quote && quote.subtotal <= 0 && <p className="text-xs text-muted-foreground">Hóa đơn 0 ₫ chỉ có thể áp dụng giảm giá 0%.</p>}
           </div>
-          {discountPercent > 0 && (
+          {preview && (
             <Card className="p-4 bg-blue-50 border-blue-300 space-y-2">
-              <div className="flex justify-between items-baseline text-sm"><span className="text-muted-foreground font-semibold">Tiền Giảm:</span><span className="font-bold text-base text-blue-700">-{formatVND(discountAmount)}</span></div>
-              <div className="border-t border-blue-200 pt-2 flex justify-between items-baseline"><span className="text-muted-foreground font-semibold text-sm">Tạm Tính Sau Giảm:</span><span className="font-black text-lg text-blue-700">{formatVND(subtotal - discountAmount)}</span></div>
+              <div className="flex justify-between items-baseline text-sm"><span className="text-muted-foreground font-semibold">Tiền Giảm ({preview.percent}%):</span><span className="font-bold text-base text-blue-700">-{formatVND(preview.discount)}</span></div>
+              <div className="border-t border-blue-200 pt-2 flex justify-between items-baseline"><span className="text-muted-foreground font-semibold text-sm">Tổng Thanh Toán Sau Giảm:</span><span data-testid="discount-preview-total" className="font-black text-lg text-blue-700"><MotionValue value={preview.total}>{formatVND(preview.total)}</MotionValue></span></div>
+              {discountPercent === 0 && preview.percent > 0 && <p className="text-xs text-muted-foreground">Giảm giá riêng của bàn là 0%; giảm giá chung {preview.percent}% của hệ thống vẫn áp dụng.</p>}
             </Card>
           )}
           <div className="space-y-3 border-t pt-4">
@@ -779,7 +764,7 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
             {discountReason === 'Khác' && <Textarea placeholder="Nhập lý do..." value={customDiscountReason} onChange={(e) => setCustomDiscountReason(e.target.value)} className="text-xs" rows={2} />}
           </div>
         </ScrollArea>
-        <div className="grid grid-cols-2 gap-2 border-t p-3 bg-background"><Button variant="outline" onClick={() => { setSubView('invoice'); setDiscountPercent(0); }}><RotateCcw className="mr-1 h-4 w-4" /> Quay lại</Button><Button onClick={handleConfirmDiscount} disabled={discountPercent <= 0 || subtotal <= 0} className="bg-amber-600 hover:bg-amber-700 font-bold"><Percent className="mr-1 h-4 w-4" /> Áp dụng</Button></div>
+        <div className="grid grid-cols-2 gap-2 border-t p-3 bg-background"><Button variant="outline" onClick={() => { setSubView('invoice'); setDiscountPercent(0); }}><RotateCcw className="mr-1 h-4 w-4" /> Quay lại</Button><Button busy={isApplyingDiscount} onClick={handleConfirmDiscount} disabled={!order || !quote || discountPercent === null || isApplyingDiscount || (discountPercent > 0 && quote.subtotal <= 0)} className="bg-amber-600 hover:bg-amber-700 font-bold"><Percent className="mr-1 h-4 w-4" /> Áp dụng</Button></div>
       </div>
     )
   }
@@ -787,10 +772,10 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
   return (
     <div className="flex h-[80vh] flex-col">
       <DialogHeader className="border-b p-4 flex flex-row items-center justify-between">
-        <DialogTitle>Hóa Đơn — {table.name}</DialogTitle>
+        <DialogTitle data-motion-count>Hóa Đơn — {table.name}</DialogTitle>
         <div className="flex gap-1">
           <Button size="sm" variant="outline" className="text-xs h-8 border-red-200 text-red-700 hover:bg-red-50 font-semibold" disabled={!order || !quote || isPaying} onClick={() => setSubView('return')}>🔙 Trả món</Button>
-          <Button size="sm" variant="outline" className="text-xs h-8 border-amber-200 text-amber-700 hover:bg-amber-50 font-semibold" disabled={!order || !quote || isPaying} onClick={() => setSubView('discount')}>💰 Giảm giá</Button>
+          <Button size="sm" variant="outline" className="text-xs h-8 border-amber-200 text-amber-700 hover:bg-amber-50 font-semibold" disabled={!order || !quote || isPaying} onClick={() => { setDiscountPercent(quote?.table_discount_percent ?? order?.discount_percent ?? 0); setSubView('discount') }}>💰 Giảm giá</Button>
         </div>
       </DialogHeader>
       <ScrollArea className="flex-1 p-4">
@@ -852,7 +837,7 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
             </div>
           )}
         </div>
-        <div className="my-4 border-t pt-3"><div className="flex justify-between items-baseline"><span className="text-base font-bold">Tổng Thanh Toán:</span><span className="text-3xl font-black text-primary">{formatVND(finalTotal)}</span></div></div>
+        <div className="my-4 border-t pt-3"><div className="flex justify-between items-baseline"><span className="text-base font-bold">Tổng Thanh Toán:</span><span className="text-3xl font-black text-primary"><MotionValue value={finalTotal}>{formatVND(finalTotal)}</MotionValue></span></div></div>
         <div className="space-y-2 border-t pt-3">
           <div className="text-xs font-bold uppercase text-muted-foreground">Phương Thức Thanh Toán:</div>
           <div className="grid grid-cols-2 gap-2">
@@ -863,7 +848,7 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
         {method === 'qr' && (
           <div className="mt-4 grid place-items-center space-y-3 border rounded-lg p-4 bg-muted/30">
             {pay.qr_image_url ? <img src={pay.qr_image_url} alt="QR" className="max-h-64 rounded-lg border" /> : <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">Chưa cấu hình ảnh QR</div>}
-            <p className="text-sm font-semibold">Số tiền: <span className="text-primary font-black">{formatVND(finalTotal)}</span></p>
+            <p className="text-sm font-semibold">Số tiền: <span className="text-primary font-black"><MotionValue value={finalTotal}>{formatVND(finalTotal)}</MotionValue></span></p>
             {(pay.bank_name || pay.account_holder || pay.account_number) && (
               <div className="w-full max-w-sm space-y-1 rounded-lg border bg-muted/40 p-3 text-xs">
                 {pay.bank_name && <div className="flex justify-between"><span className="text-muted-foreground">Ngân hàng:</span><span className="font-semibold">{pay.bank_name}</span></div>}
@@ -877,9 +862,9 @@ export function PayPanel({ table, onDone }: { table: RestaurantTable; onBack: ()
       <div className="grid grid-cols-2 gap-2 border-t p-3 bg-background shrink-0">
         <Button variant="outline" disabled={!order || !quote || isPaying} onClick={() => order && printBill(order.id, { overridePaymentMethod: method, currentUserId: user?.id })} size="sm" className="font-semibold"><Receipt className="mr-1 h-4 w-4" /> In bill</Button>
         {method === 'cash' ? (
-          <Button disabled={!order || !quote || isPaying} onClick={confirmCashReceived} className="bg-emerald-600 hover:bg-emerald-700 font-bold" size="sm"><CheckCircle2 className="mr-1 h-4 w-4" /> Đã nhận tiền</Button>
+          <Button disabled={!order || !quote || isPaying} busy={isPaying} onClick={confirmCashReceived} className="bg-emerald-600 hover:bg-emerald-700 font-bold" size="sm"><CheckCircle2 className="mr-1 h-4 w-4" /> Đã nhận tiền</Button>
         ) : (
-          <Button disabled={!order || !quote || isPaying} onClick={requestPayment} className="bg-red-600 hover:bg-red-700 text-white font-bold" size="sm">Thanh toán</Button>
+          <Button disabled={!order || !quote || isPaying} busy={isPaying} onClick={requestPayment} className="bg-red-600 hover:bg-red-700 text-white font-bold" size="sm">Thanh toán</Button>
         )}
       </div>
     </div>

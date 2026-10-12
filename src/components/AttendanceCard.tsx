@@ -1,3 +1,4 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -7,7 +8,7 @@ import { errorMessage } from '@/lib/errors'
 import { getCurrentPosition,getLocationPermission,getLocationDiagnostic,haversineMeters } from '@/lib/geo'
 import { Loader2,LogIn,LogOut,MapPin } from 'lucide-react'
 import { useCallback,useEffect,useRef,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 import { vietnamDayRange } from '../../supabase/functions/_shared/vietnamTime'
 
 interface Settings { latitude: number; longitude: number; radius_m: number }
@@ -146,7 +147,7 @@ export function AttendanceCard() {
   return (
     <Card className="space-y-3 p-4">
       <div className="flex items-center justify-between">
-        <h3 className="flex items-center gap-2 font-bold"><MapPin className="h-4 w-4 text-primary" />Điểm danh GPS</h3>
+        <AnimatedHeading as="h3" className="flex items-center gap-2 font-bold"><MapPin className="h-4 w-4 text-primary" />Điểm danh GPS</AnimatedHeading>
         <Button size="sm" variant="outline" onClick={() => { void refreshPos() }} disabled={locating}>
           {locating ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Cập nhật vị trí'}
         </Button>
@@ -171,14 +172,14 @@ export function AttendanceCard() {
           <div className="grid grid-cols-2 gap-2">
             <Button
               disabled={busy || checkedIn || completed || !inRange}
-              onClick={() => punch('in')}
+              busy={busy} onClick={() => punch('in')}
             >
               <LogIn className="mr-1 h-4 w-4" />Check-in
             </Button>
             <Button
               variant="secondary"
               disabled={busy || !checkedIn || completed || !inRange}
-              onClick={() => punch('out')}
+              busy={busy} onClick={() => punch('out')}
             >
               <LogOut className="mr-1 h-4 w-4" />Check-out
             </Button>

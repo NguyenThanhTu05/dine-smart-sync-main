@@ -1,3 +1,5 @@
+import { Suspense } from 'react'
+import { PageLoading } from '@/components/PageLoading'
 import type { LucideIcon } from 'lucide-react';
 import { ChefHat,LayoutGrid,LogOut,MapPin,Menu,Receipt,User } from 'lucide-react';
 import { NavLink,Outlet,useLocation } from 'react-router-dom';
@@ -51,7 +53,7 @@ export default function DesktopLayout({ rolePrefix, title, extraTabs = [] }: {
           <p className="truncate text-xs text-muted-foreground">{user?.user_metadata?.full_name ?? user?.email} </p>
         </div>
       </div>
-      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2 pr-3">
         {tabs.map(t => {
           const active = isActive(t)
           return (
@@ -109,7 +111,7 @@ export default function DesktopLayout({ rolePrefix, title, extraTabs = [] }: {
             <LogOut className="h-4 w-4"/>
           </Button>
         </header>
-        <main className="flex-1 overflow-y-auto"><Outlet /></main>
+        <main className="flex-1 overflow-y-auto"><Suspense fallback={<PageLoading/>}><Outlet /></Suspense></main>
       </div>
     </div>
   )

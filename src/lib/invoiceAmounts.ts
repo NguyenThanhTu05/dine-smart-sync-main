@@ -12,6 +12,14 @@ export const paymentQuoteSchema = z.object({
 })
 export type PaymentQuote = z.infer<typeof paymentQuoteSchema>
 
+// Preview only: saving and payment still use RPCs and their fresh authoritative quotes.
+export function discountQuotePreview(quote: PaymentQuote, tablePercent: number) {
+  const percent = tablePercent > 0 ? tablePercent : quote.global_discount_percent ?? 0
+  const beforeDiscount = quote.subtotal + quote.service_fee + quote.vat_fee
+  const discount = Math.round(beforeDiscount * percent / 100)
+  return { percent, discount, total: beforeDiscount - discount }
+}
+
 type OrderAmountsInput = { is_paid: boolean; total: number; discount_percent?: number | null; payment_snapshot?: unknown; order_items?: { price_snapshot: number; quantity: number }[] }
 type Settings = { service_percent: number; vat_percent: number; global_discount_percent: number }
 

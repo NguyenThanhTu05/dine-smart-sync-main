@@ -5,7 +5,7 @@ import { AttendanceCard } from './AttendanceCard'
 const mock=vi.hoisted(()=>({rpc:vi.fn(),position:vi.fn(),permission:vi.fn(),error:vi.fn()}))
 vi.mock('@/contexts/authState',()=>({useAuth:()=>({user:{id:'staff'}})}))
 vi.mock('@/lib/geo',()=>({getCurrentPosition:mock.position,getLocationPermission:mock.permission,getLocationDiagnostic:()=>null,haversineMeters:()=>0}))
-vi.mock('sonner',()=>({toast:{error:mock.error,success:vi.fn()}}))
+vi.mock('@/lib/notifications',()=>({toast:{error:mock.error,success:vi.fn()}}))
 vi.mock('@/integrations/supabase/client',()=>({supabase:{
   rpc:mock.rpc,removeChannel:vi.fn(),
   channel:()=>{const ch={on:()=>ch,subscribe:()=>ch};return ch},

@@ -1,3 +1,5 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
+import { matchDishName } from '@/lib/dishSearch'
 import { ImageUpload } from '@/components/ImageUpload';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -21,7 +23,7 @@ import { readableError } from '@/lib/restaurantTransactions';
 import { PackagePlus,Plus,Trash2 } from 'lucide-react';
 import { useCallback,useEffect,useRef,useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { toast } from '@/lib/notifications';
 type MenuForm = Omit<Tables<'menu_items'>,'id'|'created_at'|'price'> & {id?:string;price:number|string}
 
 interface Ing { id: string; name: string; unit: string; stock: number; min_stock: number }
@@ -62,7 +64,7 @@ function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }
         stock: decimalInput(edit.stock, 'Tồn kho'), min_stock: decimalInput(edit.min_stock, 'Tồn tối thiểu'), expected_stock: edit.expected_stock,
         expected: expectedIngredient ? { ...expectedIngredient } : null }
       await stockTransaction(edit.id ? 'edit' : 'create', edit.id ?? null, data)
-      setOpen(false); setEdit({ name: '', unit: 'g', stock: 0, min_stock: 0 }); await load(); toast.success('Đã lưu')
+      setOpen(false); setEdit({ name: '', unit: 'g', stock: 0, min_stock: 0 }); await load(); toast.success('Đã lưu nguyên liệu')
     } catch (error) { toast.error(readableError(error)); await load() } finally { setSaving(false) }
   }
   const del = async (id: string) => {
@@ -87,7 +89,7 @@ function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {rows.map(r => (
-          <Card key={r.id} className="p-4">
+          <Card key={r.id} data-motion-id={`inventory-${r.id}`} className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <div className="font-bold">{r.name}</div>
@@ -135,6 +137,10 @@ function InventoryTab({ onRowsChange }: { onRowsChange?: (rows: Ing[]) => void }
 // ─────────────────────────────────────────────
 function MenuTab() {
   const { items, categories, reload } = useMenu()
+  const [search, setSearch] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const matches = items.map(item => ({ item, score: matchDishName(item.name, search) })).filter(result => result.score >= 0).sort((a, b) => b.score - a.score)
+  const visibleItems = matches.map(result => result.item)
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<MenuForm>({ name: '', price: '', category_id: null, is_available: true, is_default: false, no_cook: false, image_url: '', recipe: '' })
   const [catOpen, setCatOpen] = useState(false)
@@ -153,7 +159,7 @@ function MenuTab() {
       if (error) return toast.error(error.message)
       setOpen(false)
       setForm({ name: '', price: '', category_id: categories[0]?.id ?? null, is_available: true, is_default: false, no_cook: false, image_url: '', recipe: '' })
-      reload(); toast.success('Đã lưu')
+      reload(); toast.success('Đã lưu món ăn')
     } catch (err) { toast.error(readableError(err)) } finally { setSaving(false) }
   }
 
@@ -188,11 +194,26 @@ function MenuTab() {
         </div>
       </div>
 
+      <div className="space-y-2">
+        <Label htmlFor="dish-search">Tìm món theo tên</Label>
+        <div className="flex gap-2">
+          <Input id="dish-search" type="search" value={search} placeholder="Nhập tên món, có thể không dấu…" autoComplete="off"
+            onFocus={() => setShowSuggestions(true)} onBlur={() => setShowSuggestions(false)}
+            onChange={event => { setSearch(event.target.value); setShowSuggestions(true) }} />
+          {search && <Button variant="outline" onClick={() => { setSearch(''); setShowSuggestions(false) }}>Xóa</Button>}
+        </div>
+        {search.trim() && showSuggestions && visibleItems.length > 0 && <div className="rounded-lg border p-1" aria-label="Gợi ý tên món">
+          {visibleItems.slice(0, 5).map(item => <Button key={item.id} variant="ghost" className="w-full justify-start whitespace-normal text-left" onPointerDown={event => event.preventDefault()}
+            onClick={() => { setSearch(item.name); setShowSuggestions(false) }}>{item.name}</Button>)}
+        </div>}
+        {search.trim() && <p className="text-sm text-muted-foreground">{visibleItems.length ? `${visibleItems.length} món phù hợp` : 'Không tìm thấy món phù hợp. Thử tên ngắn hơn.'}</p>}
+      </div>
+
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
-        {items.map(it => (
-          <Card key={it.id} className="overflow-hidden">
+        {visibleItems.map(it => (
+          <Card key={it.id} data-motion-id={`menu-${it.id}`} className="overflow-hidden">
             <div className="aspect-square w-full overflow-hidden bg-muted relative">
-              {it.no_cook && <span className="absolute top-2 right-2 bg-blue-600 text-white font-bold text-[10px] px-2 py-0.5 rounded-md shadow-sm z-10 animate-pulse">có sẵn</span>}
+              {it.no_cook && <span className="absolute top-2 right-2 bg-blue-600 text-white font-bold text-[10px] px-2 py-0.5 rounded-md shadow-sm z-10">có sẵn</span>}
               {it.image_url ? <img src={it.image_url} alt={it.name} className="h-full w-full object-cover" loading="lazy"/> : <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Chưa có ảnh</div>}
             </div>
             <div className="p-3">
@@ -274,6 +295,9 @@ function RecipesTab() {
   const { items } = useMenu()
   const [ings, setIngs] = useState<Ingredient[]>([])
   const [sel, setSel] = useState<string | null>(null)
+  useEffect(() => {
+    setSel(current => items.some(item => item.id === current) ? current : items[0]?.id ?? null)
+  }, [items])
   const [recipe, setRecipe] = useState<Recipe[]>([])
   const [newIng, setNewIng] = useState({ ing: '', qty: '' })
   const expectedRecipe = () => recipe.map(r => ({ ingredient_id: r.ingredient_id, quantity: r.quantity })).sort((a, b) => (a.ingredient_id ?? '').localeCompare(b.ingredient_id ?? ''))
@@ -325,8 +349,9 @@ function RecipesTab() {
   return (
     <div className="grid gap-4 md:grid-cols-[260px_1fr]">
       <Card className="p-3">
-        <h2 className="mb-2 font-bold">Món ăn</h2>
-        <div className="space-y-1 max-h-[70vh] overflow-y-auto">
+        <AnimatedHeading as="h2" className="mb-2 font-bold">Món ăn</AnimatedHeading>
+        <div className="md:hidden"><Select value={sel ?? ''} onValueChange={setSel}><SelectTrigger aria-label="Chọn món để sửa định mức"><SelectValue placeholder="Chọn món ăn"/></SelectTrigger><SelectContent>{items.map(it => <SelectItem key={it.id} value={it.id}>{it.name}</SelectItem>)}</SelectContent></Select></div>
+        <div className="hidden md:block space-y-1 max-h-[70vh] overflow-y-auto">
           {items.map(it => (
             <button key={it.id} onClick={() => setSel(it.id)} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${sel === it.id ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>
               {it.name}
@@ -335,7 +360,7 @@ function RecipesTab() {
         </div>
       </Card>
       <Card className="p-4">
-        <h2 className="mb-3 font-bold">Định mức nguyên liệu</h2>
+        <AnimatedHeading as="h2" className="mb-3 font-bold">Định mức nguyên liệu{sel && <span className="mt-1 block text-sm font-normal text-primary">{items.find(it => it.id === sel)?.name}</span>}</AnimatedHeading>
         {!sel && <p className="text-sm text-muted-foreground">Chọn món để chỉnh công thức.</p>}
         {sel && (
           <>
@@ -350,14 +375,14 @@ function RecipesTab() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 flex items-end gap-2 border-t pt-3">
-              <div className="flex-1">
+            <div className="mt-4 grid grid-cols-2 sm:flex items-end gap-2 border-t pt-3">
+              <div className="col-span-2 min-w-0 flex-1">
                 <Select value={newIng.ing} onValueChange={(v) => setNewIng({ ...newIng, ing: v })}>
                   <SelectTrigger><SelectValue placeholder="Chọn nguyên liệu"/></SelectTrigger>
                   <SelectContent>{ings.map(i => <SelectItem key={i.id} value={i.id}>{i.name} ({i.unit})</SelectItem>)}</SelectContent>
                 </Select>
               </div>
-              <Input type="number" min="0.001" step="0.001" className="w-28" placeholder="Số lượng" value={newIng.qty} onChange={(e) => setNewIng({ ...newIng, qty: e.target.value })}/>
+              <Input type="number" min="0.001" step="0.001" className="w-full sm:w-28" aria-label="Số lượng nguyên liệu" placeholder="Số lượng" value={newIng.qty} onChange={(e) => setNewIng({ ...newIng, qty: e.target.value })}/>
               <Button onClick={add}><Plus className="mr-1 h-4 w-4"/>Thêm</Button>
             </div>
           </>
@@ -371,7 +396,7 @@ function RecipesTab() {
 // TRANG CHÍNH — GỘP 3 TAB
 // ─────────────────────────────────────────────
 export default function MenuAndInventory() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [invRows, setInvRows] = useState<Ing[]>([])
   const lowStock = invRows.filter(r => r.stock < r.min_stock).length
   useEffect(() => {
@@ -392,8 +417,8 @@ export default function MenuAndInventory() {
 }, [])
   return (
     <div className="space-y-4 p-6">
-      <h1 className="text-2xl font-bold">Cài đặt Menu & Tiện ích</h1>
-     <Tabs defaultValue={searchParams.get('tab') === 'inventory' ? 'inventory' : 'menu'}>
+      <AnimatedHeading as="h1" className="text-2xl font-bold">Cài đặt Menu & Tiện ích</AnimatedHeading>
+     <Tabs value={['menu', 'inventory', 'recipes'].includes(searchParams.get('tab') ?? '') ? searchParams.get('tab')! : 'menu'} onValueChange={tab => setSearchParams(previous => { const next = new URLSearchParams(previous); next.set('tab', tab); return next }, { replace: true })}>
         <TabsList>
           <TabsTrigger value="menu">Menu</TabsTrigger>
           <TabsTrigger value="inventory" className="relative gap-1.5">

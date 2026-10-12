@@ -7,7 +7,7 @@ import { errorMessage } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import { Camera,Loader2,RotateCw,Trash2,Upload,Video } from 'lucide-react'
 import { useRef,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 interface Props {
   value: string | null | undefined

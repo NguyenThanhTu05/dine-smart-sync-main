@@ -1,3 +1,4 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { DirectoryInfo as Info } from '@/components/DirectoryInfo';
 import { Avatar,AvatarFallback,AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -24,7 +25,7 @@ export default function ContactsPage() {
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm tên / username..." className="pl-9" />
       </div>
       {filtered.map(r => (
-        <Card key={r.id} className="flex cursor-pointer items-center gap-3 p-3 transition hover:bg-muted/50" onClick={() => setSel(r)}>
+        <Card key={r.id} data-motion-id={`contact-${r.id}`} data-motion-origin className="flex cursor-pointer items-center gap-3 p-3 transition hover:bg-muted/50" onClick={() => setSel(r)}>
           <Avatar className="h-12 w-12"><AvatarImage src={r.avatar_url ?? undefined}/><AvatarFallback>{r.full_name[0]}</AvatarFallback></Avatar>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -53,7 +54,7 @@ export default function ContactsPage() {
                     <AvatarFallback className="text-2xl">{sel.full_name[0]}</AvatarFallback>
                   </Avatar>
                 </button>
-                <h2 className="text-lg font-bold">{sel.full_name}</h2>
+                <AnimatedHeading as="h2" className="text-lg font-bold">{sel.full_name}</AnimatedHeading>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground">@{sel.username}</span>
                   <Badge variant="secondary">{ROLE_LABEL[sel.role]}</Badge>

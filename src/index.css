@@ -99,3 +99,16 @@
 .scrollbar-thin::-webkit-scrollbar { width: 4px; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: rgb(253 186 116); border-radius: 9999px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+/* One full outline breathes uniformly; no travelling dash or drag interception. */
+.app-login-card { position:relative; border-radius:24px; border-color:hsl(var(--primary)); }
+.app-login-card::after,[data-table-group]::after {
+ content:""; position:absolute; inset:-1px; border:2px solid hsl(var(--primary));
+ border-radius:inherit; pointer-events:none; z-index:2;
+ box-shadow:0 0 6px hsl(var(--primary)/.4);
+ animation:restaurant-outline-breathe 3.6s ease-in-out infinite;
+}
+[data-table-group]::after { inset:-2px; }
+@keyframes restaurant-outline-breathe { 0%,100% { opacity:.15; } 50% { opacity:1; } }
+@media(prefers-reduced-motion:reduce) {
+ .app-login-card::after,[data-table-group]::after { animation:none; opacity:.6; }
+}

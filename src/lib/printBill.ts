@@ -2,7 +2,7 @@ import { readOrderItems } from '@/lib/readOrderItems'
 import type { BillItem } from '@/lib/domainTypes'
 import { invoiceAmounts,paymentQuoteSchema } from '@/lib/invoiceAmounts'
 import { quoteOrder,readableError } from '@/lib/restaurantTransactions'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 // TypeScript / React
 import { supabase } from '@/integrations/supabase/client'
 import { formatVND } from '@/lib/formatVND'

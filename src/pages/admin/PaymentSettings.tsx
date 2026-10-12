@@ -1,3 +1,5 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ImageUpload } from '@/components/ImageUpload'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -8,7 +10,7 @@ import { supabase } from '@/integrations/supabase/client'
 import type { Tables } from '@/integrations/supabase/types'
 import { decimalInput,optionalText,phoneInput } from '@/lib/inputValidation'
 import { useEffect,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 type PercentKey = 'vat_percent' | 'service_percent' | 'global_discount_percent'
 type PaymentForm = Partial<Omit<Tables<'payment_settings'>, 'id' | 'updated_at' | PercentKey>> & Partial<Record<PercentKey, number | string | null>>
 const percentKeys = ['vat_percent', 'service_percent', 'global_discount_percent'] as const
@@ -31,6 +33,7 @@ function PercentInput({ value, onChange }: { value: number | string; onChange: (
 }
 
 export default function PaymentSettings() {
+  const [saving, setSaving] = useState(false)
   const [s, setS] = useState<PaymentForm>({
     qr_image_url: '', bank_name: '', account_holder: '', account_number: '',
     shop_name: '', logo_url: '', address: '', phone: '', tax_code: '', slogan: '',
@@ -51,6 +54,7 @@ export default function PaymentSettings() {
   const upd = (k: keyof PaymentForm, v: string | number | null) => setS((prev) => ({ ...prev, [k]: v }))
 
   const save = async () => {
+    if (saving) return
     const dataToUpdate: Omit<PaymentForm, PercentKey> & Partial<Record<PercentKey, number>> = {}
     try {
       for (const key of percentKeys) dataToUpdate[key] = decimalInput(s[key], 'Phần trăm', 6, 100)
@@ -61,12 +65,15 @@ export default function PaymentSettings() {
         if (typeof value === 'string') Object.assign(dataToUpdate, { [key]: optionalText(value, key, key.includes('url') ? 2048 : 10000) })
       }
     } catch (error) { return toast.error((error as Error).message) }
+    setSaving(true)
+    try {
     const { error } = await supabase
       .from('payment_settings')
       .update({ ...dataToUpdate, updated_at: new Date().toISOString() })
       .eq('id', 1)
     if (error) toast.error(error.message)
     else toast.success('Đã lưu cài đặt Thanh toán thành công!')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Không lưu được cài đặt') } finally { setSaving(false) }
   }
 
   return (
@@ -74,18 +81,22 @@ export default function PaymentSettings() {
       {/* Thanh tiêu đề chính */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b pb-4">
         <div>
-          <h1 className="text-2xl font-bold">Cài đặt Thanh toán</h1>
+          <AnimatedHeading as="h1" className="text-2xl font-bold">Cài đặt Thanh toán</AnimatedHeading>
           <p className="text-sm text-muted-foreground">Thiết lập thông tin tài khoản thanh toán và cấu hình hiển thị hóa đơn.</p>
         </div>
-        <Button onClick={save} className="w-full sm:w-auto px-6">Lưu cài đặt</Button>
       </div>
 
-      <div className="space-y-8">
+      <Tabs defaultValue="qr" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-2 sm:w-auto sm:inline-flex">
+          <TabsTrigger value="qr">Thanh toán QR</TabsTrigger>
+          <TabsTrigger value="bill">Hóa đơn</TabsTrigger>
+        </TabsList>
+        <TabsContent value="qr">
         
         {/* THẺ 1: CẤU HÌNH THANH TOÁN (Tài khoản ngân hàng + Ảnh QR) */}
         <Card className="p-4 space-y-2">
           <div className="border-b pb-2">
-            <h2 className="text-lg font-semibold text-primary">1. Cấu hình thanh toán qua Mã QR</h2>
+            <AnimatedHeading as="h2" className="text-lg font-semibold text-primary">Cấu hình thanh toán qua Mã QR</AnimatedHeading>
             <p className="text-xs text-muted-foreground">Thông tin phục vụ cho việc chuyển khoản nhanh nhận tiền của cửa hàng.</p>
           </div>
 
@@ -118,10 +129,12 @@ export default function PaymentSettings() {
         </Card>
 
 
+        </TabsContent>
+        <TabsContent value="bill">
         {/* THẺ 2: CẤU HÌNH IN BILL (Thông tin quán, Chi phí, Logo, Wifi/Fanpage) */}
         <Card className="p-4 space-y-3">
           <div className="border-b pb-2">
-            <h2 className="text-lg font-semibold text-primary">2. Thông tin & Giao diện in hóa đơn (Bill)</h2>
+            <AnimatedHeading as="h2" className="text-lg font-semibold text-primary">Thông tin & Giao diện in hóa đơn (Bill)</AnimatedHeading>
             <p className="text-xs text-muted-foreground">Cấu hình các thành phần hiển thị trên phiếu thanh toán của khách hàng.</p>
           </div>
 
@@ -210,11 +223,12 @@ export default function PaymentSettings() {
           </div>
         </Card>
 
-      </div>
+        </TabsContent>
+      </Tabs>
 
       {/* Nút lưu phụ chân trang */}
       <div className="flex justify-end pt-2">
-        <Button onClick={save} className="w-full md:w-auto px-8">Lưu cài đặt</Button>
+        <Button busy={saving} onClick={save} className="w-full md:w-auto px-8">Lưu cài đặt</Button>
       </div>
     </div>
   )

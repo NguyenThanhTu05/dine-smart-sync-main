@@ -1,3 +1,4 @@
+import { AnimatedHeading, TextReveal } from '@/components/TypographyMotion'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,7 +9,7 @@ import { passwordInput } from '@/lib/inputValidation'
 import { ChefHat,Loader2 } from 'lucide-react'
 import { useEffect,useState } from 'react'
 import { Navigate } from 'react-router-dom'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 export default function Login() {
   const { session, role, loading, isRecovery, signInWithUsername } = useAuth()
@@ -150,14 +151,14 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
   }
   return (
     <div className="grid min-h-screen place-items-center bg-gradient-to-br from-secondary/40 via-background to-background p-4">
-      <Card className="w-full max-w-md p-8 shadow-soft">
+      <Card className="app-login-card w-full max-w-md p-8 shadow-soft">
         <div className="mb-6 flex flex-col items-center gap-3">
           <div className="grid h-16 w-16 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-soft">
             <ChefHat className="h-8 w-8" />
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold">Quản lý Nhà hàng</h1>
-            <p className="text-sm text-muted-foreground">Đăng nhập để bắt đầu ca làm</p>
+            <AnimatedHeading as="h1" accent className="text-2xl font-bold">Quản lý Nhà hàng</AnimatedHeading>
+            <p className="text-sm text-muted-foreground"><TextReveal>Đăng nhập để bắt đầu ca làm</TextReveal></p>
           </div>
         </div>
         <form onSubmit={onSubmit} className="space-y-4">
@@ -190,7 +191,7 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
 
             {forgotStep === 'input' && (
               <>
-                <h2 className="mb-1 text-lg font-semibold">Quên mật khẩu</h2>
+                <AnimatedHeading as="h2" className="mb-1 text-lg font-semibold">Quên mật khẩu</AnimatedHeading>
                 <p className="mb-4 text-sm text-muted-foreground">Nhập tên đăng nhập để xác nhận</p>
                 <form onSubmit={onForgotSubmit} className="space-y-4">
                   <div className="space-y-1.5">
@@ -217,7 +218,7 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
 
             {forgotStep === 'admin-otp' && !isRecovery && (
               <>
-                <h2 className="mb-1 text-lg font-semibold">Xác nhận qua Gmail</h2>
+                <AnimatedHeading as="h2" className="mb-1 text-lg font-semibold">Xác nhận qua Gmail</AnimatedHeading>
                 <p className="mb-4 text-sm text-muted-foreground">
                   Nhấn gửi mã để nhận OTP về <span className="font-medium text-foreground">{adminEmail}</span>
                 </p>
@@ -249,7 +250,7 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
 
            {forgotStep === 'admin-otp' && isRecovery && (
               <>
-                <h2 className="mb-1 text-lg font-semibold">Đặt mật khẩu mới</h2>
+                <AnimatedHeading as="h2" className="mb-1 text-lg font-semibold">Đặt mật khẩu mới</AnimatedHeading>
                 <p className="mb-4 text-sm text-muted-foreground">Nhập mật khẩu mới cho tài khoản quản lý</p>
                 <form onSubmit={onResetPassword} className="space-y-4">
                   <div className="space-y-1.5">
@@ -316,7 +317,7 @@ if (session && role && !isRecovery) return <Navigate to={`/${role}`} replace />
                 <div className="mb-4 grid h-12 w-12 place-items-center rounded-xl bg-orange-100 text-orange-600">
                   <ChefHat className="h-6 w-6" />
                 </div>
-                <h2 className="mb-1 text-lg font-semibold">Liên hệ Quản lý</h2>
+                <AnimatedHeading as="h2" className="mb-1 text-lg font-semibold">Liên hệ Quản lý</AnimatedHeading>
                 <p className="mb-4 text-sm text-muted-foreground">
                   Tài khoản <span className="font-medium text-foreground">{forgotUsername}</span> không thể tự đặt lại mật khẩu.
                   Vui lòng liên hệ Quản lý để được cấp mật khẩu mới.

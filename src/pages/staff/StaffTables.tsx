@@ -1,3 +1,4 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { OrderPanel,PayPanel,ServedPanel } from '@/components/tables/TablePanels'
 import { TablesGrid } from '@/components/tables/TablesGrid'
 import { Badge } from '@/components/ui/badge'
@@ -8,7 +9,7 @@ import { readableError,releaseTables } from '@/lib/restaurantTransactions'
 import { unmergeGroup } from '@/lib/tableGroupActions'
 import { BellRing,CheckCircle2,CreditCard,Plus,Unlink } from 'lucide-react'
 import { useEffect,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 export default function StaffTables() {
   const [selected, setSelected] = useState<RestaurantTable | null>(null)
@@ -23,7 +24,7 @@ export default function StaffTables() {
         onSelectTable={setSelected}
         header={
           <div>
-            <h1 className="text-xl font-bold md:text-2xl">Sơ đồ bàn</h1>
+            <AnimatedHeading as="h1" className="text-xl font-bold md:text-2xl">Sơ đồ bàn</AnimatedHeading>
             <p className="mt-1 text-xs text-muted-foreground">
               💡 Nhấn giữ &amp; kéo để ghép bàn. Nhấn vào bàn để mở thao tác.
             </p>

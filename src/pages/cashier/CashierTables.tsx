@@ -1,3 +1,5 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
+import { MotionValue } from '@/components/MotionValue'
 import { OrderPanel,PayPanel,ServedPanel } from '@/components/tables/TablePanels'
 import { TablesGrid } from '@/components/tables/TablesGrid'
 import { Badge } from '@/components/ui/badge'
@@ -12,7 +14,7 @@ import { payOrder,quoteOrder,readableError,releaseTables,type PaymentQuote } fro
 import { unmergeGroup } from '@/lib/tableGroupActions'
 import { BellRing,CheckCircle2,ChevronLeft,CreditCard,Plus,Unlink } from 'lucide-react'
 import { useEffect,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 export default function CashierTables() {
   const { tables, reload, loading, error } = useTables()
@@ -29,7 +31,7 @@ export default function CashierTables() {
         onSelectTable={setSel}
         header={
           <div>
-            <h1 className="text-xl font-bold md:text-2xl">Sơ đồ bàn</h1>
+            <AnimatedHeading as="h1" className="text-xl font-bold md:text-2xl">Sơ đồ bàn</AnimatedHeading>
             <p className="mt-1 text-xs text-muted-foreground">
               💡 <b>Nhấn giữ &amp; kéo</b> bàn để ghép. Nhấn vào bàn để mở thao tác.
             </p>
@@ -235,7 +237,7 @@ function CashierConfirmPay({ table, onClose, onReload }: {
         </div>
         <div className="flex justify-between border-t pt-2 text-base font-bold">
           <span>Tổng thanh toán</span>
-          <span className="text-primary">{formatVND(finalTotal)}</span>
+          <span className="text-primary"><MotionValue value={finalTotal}>{formatVND(finalTotal)}</MotionValue></span>
         </div>
         {/* <div className="text-xs text-muted-foreground">
           Phương thức: <b>{order.payment_method === 'qr' ? 'QR Chuyển khoản' : 'Tiền mặt'}</b>
@@ -245,7 +247,7 @@ function CashierConfirmPay({ table, onClose, onReload }: {
         <Button variant="outline" onClick={onClose}>
           <ChevronLeft className="mr-1 h-4 w-4" />Quay lại
         </Button>
-        <Button onClick={confirm} disabled={!quote || isPaying}>
+        <Button busy={isPaying} onClick={confirm} disabled={!quote || isPaying}>
           <CheckCircle2 className="mr-1 h-4 w-4" />Xác nhận
         </Button>
       </div>

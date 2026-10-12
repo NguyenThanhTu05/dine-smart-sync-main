@@ -1,3 +1,4 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { TouchAreaSurface,TouchTableDnd,TouchTableSurface } from '@/components/tables/TouchTableDrag'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -11,7 +12,7 @@ import { getSharedBroadcastChannel } from '@/lib/tableGroup'
 import { cn } from '@/lib/utils'
 import { Link2,Plus,Trash2 } from 'lucide-react'
 import { useRef,useState } from 'react'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 
 const STATUS_BG: Record<string, string> = {
   empty: 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200/80',
@@ -23,6 +24,7 @@ const STATUS_BG: Record<string, string> = {
 export default function AreasPage() {
   const { role } = useAuth()
   const canManageAreas = role === 'admin'
+  const canMoveTables = role === 'admin' || role === 'cashier'
   const { areas: hookAreas, tables: hookTables, reload } = useTables()
   const [newArea, setNewArea] = useState('')
   const [newTable, setNewTable] = useState<Record<string, { name: string; seats: number | string }>>({})
@@ -96,7 +98,7 @@ export default function AreasPage() {
   }
 
   const handleDragStart = (e: React.DragEvent, table: RestaurantTable) => {
-    if (!canManageAreas || table.status !== 'empty') {
+    if (!canMoveTables || table.status !== 'empty') {
       e.preventDefault()
       toast.error(`Bàn ${table.name} đang hoạt động, không được phép thay đổi vị trí thứ tự!`)
       return
@@ -115,7 +117,7 @@ export default function AreasPage() {
   }
 
   const performMove = async (sourceId: string,target: { area?: string; table?: string }) => {
-    if (!canManageAreas || moveLock.current) return
+    if (!canMoveTables || moveLock.current) return
     const source = sortedTables.find(table => table.id === sourceId)
     if (!source || source.status !== 'empty' || source.merged_group_id) return toast.error('Chỉ đổi vị trí bàn trống chưa ghép nhóm.')
     if (target.table === sourceId || target.area === source.area_id) return
@@ -149,7 +151,7 @@ export default function AreasPage() {
       overlay={draggedTable && <div className={cn('rounded-xl border-2 p-3 text-sm font-semibold shadow-xl',STATUS_BG[draggedTable.status])}><b>{draggedTable.name}</b><div className="text-[10px]">{draggedTable.seats} chỗ • STT:{draggedTable.sort_order || 0}</div></div>}>
     <div className="space-y-6 p-4 md:p-6 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold md:text-3xl">Khu vực &amp; Bàn</h1>
+        <AnimatedHeading as="h1" className="text-2xl font-bold md:text-3xl">Khu vực &amp; Bàn</AnimatedHeading>
         <p className="text-xs text-muted-foreground mt-1">
           💡 Hướng dẫn: Nhấn giữ rồi kéo cả thẻ bàn trống độc lập để thay đổi vị trí thứ tự hoặc phân khu. <span className="text-destructive font-semibold">Các bàn đang ăn nhậu hoặc đang được ghép nhóm sẽ bị khóa cứng vị trí kéo thả.</span>
         </p>
@@ -178,7 +180,7 @@ export default function AreasPage() {
           >
             <div className="mb-4 flex items-center justify-between border-b pb-2">
               <div>
-                <h2 className="text-base font-bold text-foreground">{a.name}</h2>
+                <AnimatedHeading as="h2" className="text-base font-bold text-foreground">{a.name}</AnimatedHeading>
                 <p className="text-[11px] text-muted-foreground">Khu vực chứa {areaTables.length} bàn ăn</p>
               </div>
               <Button disabled={!canManageAreas || areaActive} title={areaActive ? "Khu vực có bàn đang hoạt động hoặc ghép nhóm; không thể xóa." : "Xóa khu vực"} size="sm" variant="ghost" onClick={() => delArea(a.id)} className="hover:bg-destructive/10 h-8 w-8 p-0">
@@ -197,8 +199,8 @@ export default function AreasPage() {
                   <TouchTableSurface
                     key={t.id}
                     tableId={t.id}
-                    disabledDrag={!canManageAreas || shouldBlockDrag || moveBusy}
-                    draggable={canManageAreas && !shouldBlockDrag && !moveBusy}
+                    disabledDrag={!canMoveTables || shouldBlockDrag || moveBusy}
+                    draggable={canMoveTables && !shouldBlockDrag && !moveBusy}
                     onDragEnd={() => setDraggedTableId(null)}
                     onDragStart={(e) => handleDragStart(e, t)}
                     onDragOver={handleDragOver}

@@ -1,3 +1,5 @@
+import { Suspense } from 'react'
+import { PageLoading } from '@/components/PageLoading'
 import type { LucideIcon } from 'lucide-react';
 import { ChefHat,LayoutDashboard,LayoutGrid,LogOut,MapPin,Menu,QrCode,Receipt,User,Users,UtensilsCrossed } from 'lucide-react';
 import { NavLink,Outlet,useLocation } from 'react-router-dom';
@@ -57,7 +59,7 @@ export default function AdminLayout() {
         </div>
       </div>
 
-      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2 pr-3">
         {tabs.map(t => {
           const active = isActive(t)
           return (
@@ -121,7 +123,7 @@ export default function AdminLayout() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <Outlet />
+          <Suspense fallback={<PageLoading/>}><Outlet /></Suspense>
         </main>
       </div>
     </div>

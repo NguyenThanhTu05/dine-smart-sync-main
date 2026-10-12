@@ -1,11 +1,26 @@
 import { describe,expect,it } from 'vitest'
-import { billDisplayAmount, invoiceAmounts } from './invoiceAmounts'
+import { billDisplayAmount, discountQuotePreview, invoiceAmounts, paymentQuoteSchema } from './invoiceAmounts'
 
 const settings = { vat_percent: 8, service_percent: 10, global_discount_percent: 5 }
 const snapshot = { version: 1, order_id: 'order', fingerprint: 'frozen', subtotal: 10000,
   service_percent: 10, service_fee: 1000, vat_percent: 8, vat_fee: 880,
   discount_percent: 5, discount_amount: 594, total: 11286, table_name: 'A + B', staff_name: 'Test',
   items: [], payment_method: 'cash', paid_at: '2026-10-09T00:00:00Z', cashier_name: 'Test cashier' }
+
+describe('discount preview from the server quote', () => {
+  const quote = paymentQuoteSchema.parse({ ...snapshot, global_discount_percent: 0 })
+  it('includes server VAT and service fee, without subtracting the previous discount twice', () => {
+    expect(discountQuotePreview(quote, 10)).toEqual({ percent: 10, discount: 1188, total: 10692 })
+    expect(quote.total).toBe(11286)
+  })
+  it('supports zero and full discounts', () => {
+    expect(discountQuotePreview(quote, 0)).toEqual({ percent: 0, discount: 0, total: 11880 })
+    expect(discountQuotePreview(quote, 100).total).toBe(0)
+  })
+  it('preserves the existing server policy for global discount when the table percent is zero', () => {
+    expect(discountQuotePreview({ ...quote, global_discount_percent: 5 }, 0)).toEqual({ percent: 5, discount: 594, total: 11286 })
+  })
+})
 
 describe('settled and legacy invoice amounts', () => {
   it('uses frozen money even if fees, discount, current items and stored subtotal differ', () => {

@@ -1,6 +1,6 @@
 import { supabase } from '@/integrations/supabase/client'
 import { readableError,releaseTables } from '@/lib/restaurantTransactions'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 export async function unmergeGroup(groupId: string) {
   try {
     const { data, error } = await supabase.from('restaurant_tables').select('id').eq('merged_group_id', groupId).limit(1).maybeSingle()

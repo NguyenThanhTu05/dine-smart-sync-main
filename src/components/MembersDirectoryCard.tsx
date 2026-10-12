@@ -26,7 +26,7 @@ export function MembersDirectoryCard() {
       </div>
       <div className="max-h-72 space-y-2 overflow-y-auto">
         {filtered.map(r => (
-          <div key={r.id} onClick={() => setSel(r)} className="flex items-center gap-3 rounded-lg border p-2 cursor-pointer hover:bg-muted/50 transition">
+          <div key={r.id} data-motion-id={`member-${r.id}`} data-motion-origin onClick={() => setSel(r)} className="flex items-center gap-3 rounded-lg border p-2 cursor-pointer hover:bg-muted/50 transition">
             <Avatar className="h-9 w-9">
               <AvatarImage src={r.avatar_url ?? undefined} />
               <AvatarFallback>{r.full_name?.[0] ?? '?'}</AvatarFallback>

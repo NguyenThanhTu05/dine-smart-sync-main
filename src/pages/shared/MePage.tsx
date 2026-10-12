@@ -1,3 +1,4 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { AttendanceCard } from '@/components/AttendanceCard'
 import { AvatarUpload } from '@/components/AvatarUpload'
 import { MembersDirectoryCard } from '@/components/MembersDirectoryCard'
@@ -15,12 +16,14 @@ import { dateInput,optionalText,phoneInput,requiredText } from '@/lib/inputValid
 import { ROLE_LABEL } from '@/lib/roles'
 import { differenceInDays,format,parseISO } from 'date-fns'
 import { Loader2 } from 'lucide-react'
-import { useEffect,useState } from 'react'
-import { toast } from 'sonner'
+import { useEffect,useRef,useState } from 'react'
+import { toast } from '@/lib/notifications'
 
 export default function MePage() {
   const { user, role } = useAuth()
   const [p, setP] = useState<Pick<Profile,'id'|'username'|'full_name'|'phone'|'address'|'birthday'|'avatar_url'|'hire_date'|'hide_personal'> | null>(null)
+  const saveInFlight = useRef(false)
+  const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true) // Quản lý trạng thái tải bằng biến độc lập
 
   useEffect(() => {
@@ -59,6 +62,7 @@ export default function MePage() {
   const tenure = p?.hire_date ? differenceInDays(new Date(), parseISO(p.hire_date)) : 0
 
   const save = async () => {
+    if (saveInFlight.current) return
     let clean: { full_name: string; username: string; phone: string; address: string; birthday: string | null }
     try {
       clean = { full_name: requiredText(p.full_name, 'Họ tên'), username: requiredText(p.username, 'Tên đăng nhập'), phone: phoneInput(p.phone),
@@ -67,6 +71,8 @@ export default function MePage() {
     // Nếu ngày sinh bị bỏ trống hoặc là chuỗi rỗng, ép về null để Postgres chấp nhận không điền
 
     // Dùng lệnh UPSERT (Nếu có rồi thì cập nhật, nếu chưa có thì chèn dòng mới vào DB)
+    saveInFlight.current = true; setSaving(true)
+    try {
     const { error } = await supabase.from('profiles').upsert({
       id: p.id,
       ...clean,
@@ -76,6 +82,7 @@ export default function MePage() {
     })
     
     if (error) toast.error(error.message); else toast.success('Đã lưu thông tin hồ sơ')
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Không lưu được hồ sơ') } finally { saveInFlight.current = false; setSaving(false) }
   }
 
   return (
@@ -103,7 +110,7 @@ export default function MePage() {
         />
         <p className="text-xs text-muted-foreground">Nhấn vào ảnh để đổi hoặc xoá</p>
         <div className="text-center">
-          <h2 className="text-lg font-bold">{p.full_name}</h2>
+          <AnimatedHeading as="h2" className="text-lg font-bold">{p.full_name}</AnimatedHeading>
           <div className="mt-1 flex items-center justify-center gap-2">
             <p className="text-xs text-muted-foreground">@{p.username}</p>
             <Badge variant="secondary">{ROLE_LABEL[role ?? ''] ?? '—'}</Badge>
@@ -130,7 +137,7 @@ export default function MePage() {
           </div>
           <Switch checked={p.hide_personal} onCheckedChange={(v) => setP({ ...p, hide_personal: v })} />
         </div>
-        <Button className="w-full" onClick={save}>Lưu thay đổi</Button>
+        <Button className="w-full" busy={saving} onClick={save}>Lưu thay đổi</Button>
       </Card>
       <MembersDirectoryCard />
     </div>

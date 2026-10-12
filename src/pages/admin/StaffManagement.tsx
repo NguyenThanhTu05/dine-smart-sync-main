@@ -1,3 +1,4 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
 import { readPages } from '../../../supabase/functions/_shared/readPages'
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,7 +17,7 @@ import { coordinateInput,dateInput,decimalInput,optionalText,passwordInput,phone
 import { ROLE_LABEL } from '@/lib/roles';
 import { Crosshair,Download,Key,Loader2,MapPin,Plus,Trash2 } from 'lucide-react';
 import { useCallback,useEffect,useMemo,useRef,useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/notifications';
 import { vietnamDayKey } from '../../../supabase/functions/_shared/vietnamTime';
 interface AttendanceRow {user_id:string;date:string;inAt?:string;outAt?:string;distIn?:number|null;distOut?:number|null}
 
@@ -27,13 +28,14 @@ export default function StaffManagement() {
 
   return (
     <div className="space-y-4 p-6">
-      <h1 className="text-2xl font-bold">Nhân sự</h1>
+      <AnimatedHeading as="h1" className="text-2xl font-bold">Nhân sự</AnimatedHeading>
 
       {/* TABS */}
       <div className="flex gap-2 border-b pb-2">
         {([['staff', 'Tài Khoản'], ['location', 'Vị trí điểm danh'], ['attendance', 'Chấm công']] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
+            aria-pressed={tab === key}
             onClick={() => setTab(key)}
             className={`px-4 py-1.5 rounded-full text-sm font-semibold border transition-colors ${tab === key ? 'bg-primary text-primary-foreground border-primary' : 'bg-muted text-muted-foreground border-border hover:bg-accent'}`}
           >
@@ -74,7 +76,7 @@ function StaffTab() {
     const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'create_user', ...clean } })
     const parsed = accountCreatedResponse.safeParse(data)
     if (error || !parsed.success || parsed.data.error || !parsed.data.ok) return toast.error(error?.message ?? (parsed.success ? parsed.data.error : undefined) ?? 'Thao tác tài khoản chưa thành công')
-    toast.success('Đã tạo'); setOpen(false); load()
+    toast.success('Đã tạo tài khoản nhân viên'); setOpen(false); load()
     setForm({ username: '', password: '', full_name: '', role: 'staff', phone: '', address: '', birthday: '' })
   }
   const del = async (id: string) => {
@@ -82,7 +84,7 @@ function StaffTab() {
     const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'delete_user', user_id: id } })
     const parsed = accountResponse.safeParse(data)
     if (error || !parsed.success || parsed.data.error || !parsed.data.ok) return toast.error(error?.message ?? (parsed.success ? parsed.data.error : undefined) ?? 'Thao tác tài khoản chưa thành công')
-    toast.success('Đã xóa'); load()
+    toast.success('Đã xóa tài khoản nhân viên'); load()
   }
   const updatePw = async () => {
     if (!pwOpen) return
@@ -99,7 +101,7 @@ function StaffTab() {
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {rows.map(r => (
-          <Card key={r.id} className="p-4">
+          <Card key={r.id} data-motion-id={`staff-${r.id}`} className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <div className="font-bold">{r.full_name}</div>

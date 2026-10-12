@@ -3,7 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import type { DirectoryMember } from '@/lib/domainTypes';
 import { errorMessage } from '@/lib/errors';
 import { useEffect,useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/notifications';
 
 export type DirectoryRow = DirectoryMember & { role: string };
 export function useDirectory() {

@@ -1,3 +1,4 @@
+import { useSlidingIndicator } from '@/lib/motion';
 import * as TabsPrimitive from "@radix-ui/react-tabs";
 import * as React from "react";
 
@@ -8,16 +9,18 @@ const Tabs = TabsPrimitive.Root;
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
+>(({ className, ...props }, ref) => {
+  const localRef = React.useRef<HTMLDivElement | null>(null);
+  useSlidingIndicator(localRef, '[data-state=active]');
+  return <TabsPrimitive.List
+    ref={node => { localRef.current = node; if (typeof ref === "function") ref(node); else if (ref) ref.current = node; }}
     className={cn(
-      "inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground",
+      "motion-tabs motion-indicator inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground",
       className,
     )}
     {...props}
-  />
-));
+  />;
+});
 TabsList.displayName = TabsPrimitive.List.displayName;
 
 const TabsTrigger = React.forwardRef<

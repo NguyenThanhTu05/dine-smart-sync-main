@@ -1,3 +1,6 @@
+import { AnimatedHeading } from '@/components/TypographyMotion'
+import { RevenueChart } from '@/components/RevenueChart'
+import { MotionValue } from '@/components/MotionValue'
 import { readPages } from '../../../supabase/functions/_shared/readPages'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -24,17 +27,13 @@ Utensils
 import { useCallback,useEffect,useRef,useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
-Area,
-AreaChart,
-CartesianGrid,
 Cell,Legend,
 Pie,
 PieChart,
 ResponsiveContainer,
 Tooltip,
-XAxis,YAxis,
 } from 'recharts'
-import { toast } from 'sonner'
+import { toast } from '@/lib/notifications'
 import { paidSales } from '../../../supabase/functions/_shared/paidSales'
 import { vietnamDayKey,vietnamDayRange,vietnamPeriodRange } from '../../../supabase/functions/_shared/vietnamTime'
 
@@ -262,17 +261,18 @@ export default function AdminDashboard() {
       {/* Thanh điều hướng Bento Header: Bộ lọc thời gian chuyên sâu */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between border-b pb-5">
         <div>
-          <h1 className="text-3xl font-black tracking-tight">Bảng điều khiển</h1>
+          <AnimatedHeading as="h1" accent className="text-3xl font-black tracking-tight">Bảng điều khiển</AnimatedHeading>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
             <CalendarDays className="h-4 w-4" /> Hôm nay: {new Date().toLocaleDateString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh'})}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex bg-muted p-1 rounded-xl border">
+          <div data-motion-tabs className="flex bg-muted p-1 rounded-xl border">
             {(['day', 'week', 'month', 'year'] as const).map((mode) => (
               <Button
                 key={mode}
+                aria-pressed={viewMode === mode}
                 variant={viewMode === mode ? 'default' : 'ghost'}
                 size="sm"
                 className={`rounded-lg px-3 transition-all font-bold text-xs ${viewMode === mode ? 'shadow-sm text-foreground bg-background' : 'text-muted-foreground hover:text-foreground'
@@ -299,7 +299,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* Thẻ chỉ số phân tích KPI */}
-   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+   <div className="dashboard-kpis grid auto-rows-fr grid-cols-2 items-stretch gap-3 xl:grid-cols-4 [&>a]:h-full [&>a]:min-w-0">
         <NavLink to="/admin/bills">
           <KpiCard
             icon={<Receipt className="h-5 w-5" />}
@@ -352,10 +352,10 @@ export default function AdminDashboard() {
       <div className="grid gap-6 lg:grid-cols-3">
 
         {/* Đồ thị vùng doanh thu */}
-        <Card className="p-6 lg:col-span-2 shadow-sm border-primary/5">
-          <div className="mb-4 flex items-end justify-between">
+        <Card className="min-w-0 p-4 sm:p-6 lg:col-span-2 shadow-sm border-primary/5">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-lg font-bold">Biến động doanh thu chi tiết</h2>
+              <AnimatedHeading as="h2" className="text-lg font-bold">Biến động doanh thu chi tiết</AnimatedHeading>
               <p className="text-xs text-muted-foreground">{legacyInvoiceCount ? 'Hóa đơn cũ dùng số tiền gốc; không tính lại VAT, phí hoặc giảm giá.' : 'Phân tích theo mốc thời gian đang hiển thị'}</p>
             </div>
             <div className="text-right">
@@ -363,45 +363,19 @@ export default function AdminDashboard() {
               <div className="text-xs text-muted-foreground">{totalOrders} hóa đơn</div>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={chartSeries} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.45} />
-                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-              <XAxis dataKey="dateLabel" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} axisLine={false} interval={0} />
-              <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} axisLine={false}
-                tickFormatter={(v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}tr` : `${(v / 1000).toFixed(0)}k`} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: 'hsl(var(--background))',
-                  border: '1px solid hsl(var(--border))',
-                  borderRadius: 12,
-                  boxShadow: '0 10px 30px -10px hsl(var(--primary) / 0.25)',
-                }}
-                formatter={(v) => [formatVND(Number(v)), 'Doanh thu']}
-                labelFormatter={(l) => `${l}`}
-              />
-              <Area type="monotone" dataKey="revenue" stroke="hsl(var(--primary))" strokeWidth={3}
-                fill="url(#revGrad)" dot={{ fill: 'hsl(var(--primary))', r: 3 }}
-                activeDot={{ r: 5, stroke: 'hsl(var(--background))', strokeWidth: 2 }} />
-            </AreaChart>
-          </ResponsiveContainer>
+          <RevenueChart series={chartSeries} orders={totalOrders} />
         </Card>
 
         {/* Khối danh sách thẻ nhân viên online */}
         <Card className="p-6 border-emerald-500/10 shadow-sm flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-1">
-              <h2 className="text-lg font-bold flex items-center gap-2">
+              <AnimatedHeading as="h2" className="text-lg font-bold flex items-center gap-2">
                 <Users className="h-5 w-5 text-emerald-500" />
                 Nhân viên tại quán
-              </h2>
-              <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold gap-1 animate-pulse">
-                <CircleDot className="h-2 w-2 fill-emerald-500" /> {onlineStaff.length} Online
+              </AnimatedHeading>
+              <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold gap-1">
+                <CircleDot className="h-2 w-2 fill-emerald-500" /> <MotionValue value={onlineStaff.length}/> Online
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground mb-4">Danh sách nhân viên đã Check-in và chưa Checkout hôm nay</p>
@@ -451,10 +425,10 @@ export default function AdminDashboard() {
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Top 5 món ăn có hiển thị ảnh menu đồng bộ */}
         <Card className="p-6 shadow-sm">
-          <h2 className="mb-4 text-lg font-bold flex items-center gap-2">
+          <AnimatedHeading as="h2" className="mb-4 text-lg font-bold flex items-center gap-2">
             <Trophy className="h-5 w-5 text-amber-500" />
             Top 5 món bán chạy (Trong kỳ chọn)
-          </h2>
+          </AnimatedHeading>
           {topItems.length === 0 ? (
             <p className="py-12 text-center text-sm text-muted-foreground">Chưa có dữ liệu món ăn cho khoảng thời gian này</p>
           ) : (
@@ -497,13 +471,14 @@ export default function AdminDashboard() {
 
         {/* Biểu đồ tròn hiển thị nhãn % trực tiếp */}
         <Card className="p-6 shadow-sm">
-          <h2 className="mb-4 text-lg font-bold">Tỷ trọng món bán (%)</h2>
+          <AnimatedHeading as="h2" className="mb-4 text-lg font-bold">Tỷ trọng món bán (%)</AnimatedHeading>
           {topItems.length === 0 ? (
             <p className="py-12 text-center text-sm text-muted-foreground">Chưa có dữ liệu đồ thị</p>
           ) : (
             <ResponsiveContainer width="100%" height={260}>
               <PieChart>
                 <Pie
+                  isAnimationActive={false}
                   data={topItems}
                   dataKey="qty"
                   nameKey="name"
@@ -530,13 +505,13 @@ function KpiCard({ icon, label, value, footer, accent }: {
   icon: React.ReactNode; label: string; value: string; footer: React.ReactNode; accent: string;
 }) {
   return (
-    <Card className={`relative overflow-hidden p-5 ${accent} shadow-sm`}>
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-muted-foreground">{label}</span>
-        <span className="rounded-lg bg-background/60 p-2 text-foreground">{icon}</span>
+    <Card className={`dashboard-kpi relative flex h-full min-h-[152px] min-w-0 flex-col overflow-hidden p-3 sm:p-5 ${accent} shadow-sm`}>
+      <div className="flex items-start justify-between gap-1">
+        <span className="text-xs sm:text-sm font-medium text-muted-foreground">{label}</span>
+        <span className="shrink-0 rounded-lg bg-background/60 p-2 text-foreground">{icon}</span>
       </div>
-      <div className="mt-3 truncate text-2xl font-black">{value}</div>
-      <div className="mt-2">{footer}</div>
+      <div className="mt-3 break-words text-lg sm:text-2xl font-black tabular-nums"><MotionValue value={value}/></div>
+      <div className="mt-auto min-h-6 pt-2">{footer}</div>
     </Card>
   )
 }
